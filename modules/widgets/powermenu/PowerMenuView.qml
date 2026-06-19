@@ -1,0 +1,37 @@
+import QtQuick
+import qs.modules.components
+import qs.modules.services
+import qs.config
+import qs.modules.theme
+
+Item {
+    implicitWidth: powerMenu.implicitWidth
+    implicitHeight: powerMenu.implicitHeight
+
+    Behavior on implicitWidth {
+        enabled: Anim.animationsEnabled
+        NumberAnimation {
+            duration: Anim.standardNormal
+            easing.type: Anim.easing("standard").type
+                        easing.bezierCurve: Anim.easing("standard").bezierCurve
+        }
+    }
+
+    Behavior on implicitHeight {
+        enabled: Anim.animationsEnabled
+        NumberAnimation {
+            duration: Anim.standardNormal
+            easing.type: Anim.easing("standard").type
+                        easing.bezierCurve: Anim.easing("standard").bezierCurve
+        }
+    }
+
+    PowerMenu {
+        id: powerMenu
+        anchors.fill: parent
+        
+        onItemSelected: {
+            Visibilities.setActiveModule("")
+        }
+    }
+}

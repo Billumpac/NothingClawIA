@@ -1,0 +1,48 @@
+{
+  "nodes": {
+    "axctl": {
+      "inputs": {
+        "nixpkgs": [
+          "nixpkgs"
+        ]
+      },
+      "locked": {
+        "lastModified": 1779243005,
+        "narHash": "sha256-oDJEY0yeMUDFvCUTKW69/lzoVk6cuRPscT0myeKnvec=",
+        "owner": "Leriart",
+        "repo": "axctl",
+        "rev": "e8ac14221379cc5a5c8565c510123e1c0b7dff01",
+        "type": "github"
+      },
+      "original": {
+        "owner": "Leriart",
+        "repo": "axctl",
+        "type": "github"
+      }
+    },
+    "nixpkgs": {
+      "locked": {
+        "lastModified": 1778869304,
+        "narHash": "sha256-30sZNZoA1cqF5JNO9fVX+wgiQYjB7HJqqJ4ztCDeBZE=",
+        "owner": "NixOS",
+        "repo": "nixpkgs",
+        "rev": "d233902339c02a9c334e7e593de68855ad26c4cb",
+        "type": "github"
+      },
+      "original": {
+        "owner": "NixOS",
+        "ref": "nixos-unstable",
+        "repo": "nixpkgs",
+        "type": "github"
+      }
+    },
+    "root": {
+      "inputs": {
+        "axctl": "axctl",
+        "nixpkgs": "nixpkgs"
+      }
+    }
+  },
+  "root": "root",
+  "version": 7
+}

@@ -1,0 +1,3895 @@
+pragma Singleton
+pragma ComponentBehavior: Bound
+import QtQuick
+import Quickshell
+import Quickshell.Io
+import qs.modules.globals
+import qs.modules.theme
+import qs.modules.services as Services
+import "defaults/theme.js" as ThemeDefaults
+import "defaults/bar.js" as BarDefaults
+import "defaults/workspaces.js" as WorkspacesDefaults
+import "defaults/overview.js" as OverviewDefaults
+import "defaults/notch.js" as NotchDefaults
+import "defaults/compositor.js" as CompositorDefaults
+import "KeybindActions.js" as KeybindActions
+import "defaults/performance.js" as PerformanceDefaults
+import "defaults/weather.js" as WeatherDefaults
+import "defaults/desktop.js" as DesktopDefaults
+import "defaults/lockscreen.js" as LockscreenDefaults
+import "defaults/prefix.js" as PrefixDefaults
+import "defaults/system.js" as SystemDefaults
+import "defaults/dock.js" as DockDefaults
+import "defaults/ai.js" as AiDefaults
+import "ConfigValidator.js" as ConfigValidator
+
+Singleton {
+    id: root
+
+    property string version: "0.0.0"
+
+    FileView {
+        id: versionFile
+        path: Qt.resolvedUrl("../version").toString().replace("file://", "")
+        onLoaded: root.version = text().trim()
+    }
+
+    property string configDir: (Quickshell.env("XDG_CONFIG_HOME") || (Quickshell.env("HOME") + "/.config")) + "/nothingless/config"
+    property string keybindsPath: (Quickshell.env("XDG_CONFIG_HOME") || (Quickshell.env("HOME") + "/.config")) + "/nothingless/binds.json"
+    property string presetDir: Qt.resolvedUrl("../assets/presets/Nothing").toString().replace("file://", "")
+
+    property bool pauseAutoSave: false
+
+    // Module init status
+    property bool themeReady: false
+    property bool barReady: false
+    property bool workspacesReady: false
+    property bool overviewReady: false
+    property bool notchReady: false
+    property bool compositorReady: false
+    property bool performanceReady: false
+    property bool weatherReady: false
+    property bool desktopReady: false
+    property bool lockscreenReady: false
+    property bool prefixReady: false
+    property bool systemReady: false
+    property bool dockReady: false
+    property bool aiReady: false
+    property bool keybindsInitialLoadComplete: false
+
+    property bool initialLoadComplete: themeReady && barReady && workspacesReady && overviewReady && notchReady && compositorReady && performanceReady && weatherReady && desktopReady && lockscreenReady && prefixReady && systemReady && dockReady && aiReady
+
+    // Compatibility aliases
+    property alias loader: themeLoader
+    property alias keybindsLoader: keybindsLoader
+
+    // ============================================
+    // BATCH INITIALIZATION
+    // ============================================
+    // Ensure config directory exists and copy preset files if missing
+    Process {
+        id: ensureConfigDir
+        running: true
+        command: [
+            "bash", "-c",
+            "mkdir -p '" + root.configDir + "' && " +
+            "cp -n '" + root.presetDir + "/theme.json' '" + root.configDir + "/theme.json' 2>/dev/null || true; " +
+            "cp -n '" + root.presetDir + "/bar.json' '" + root.configDir + "/bar.json' 2>/dev/null || true; " +
+            "cp -n '" + root.presetDir + "/workspaces.json' '" + root.configDir + "/workspaces.json' 2>/dev/null || true; " +
+            "cp -n '" + root.presetDir + "/overview.json' '" + root.configDir + "/overview.json' 2>/dev/null || true; " +
+            "cp -n '" + root.presetDir + "/notch.json' '" + root.configDir + "/notch.json' 2>/dev/null || true; " +
+            "cp -n '" + root.presetDir + "/compositor.json' '" + root.configDir + "/compositor.json' 2>/dev/null || true; " +
+            "cp -n '" + root.presetDir + "/performance.json' '" + root.configDir + "/performance.json' 2>/dev/null || true; " +
+            "cp -n '" + root.presetDir + "/desktop.json' '" + root.configDir + "/desktop.json' 2>/dev/null || true; " +
+            "cp -n '" + root.presetDir + "/lockscreen.json' '" + root.configDir + "/lockscreen.json' 2>/dev/null || true; " +
+            "cp -n '" + root.presetDir + "/dock.json' '" + root.configDir + "/dock.json' 2>/dev/null || true; " +
+            "cp -n '" + root.presetDir + "/ai.json' '" + root.configDir + "/ai.json' 2>/dev/null || true; " +
+            "cp -n '" + root.presetDir + "/system.json' '" + root.configDir + "/system.json' 2>/dev/null || true; " +
+            "test -f '" + root.configDir + "/weather.json' || echo '{\"location\":\"\",\"unit\":\"C\"}' > '" + root.configDir + "/weather.json'; " +
+            "echo 'Preset files copied if missing'"
+        ]
+    }
+
+    // Auto-migrate hyprland.json → compositor.json for existing users
+    Process {
+        id: migrateCompositorConfig
+        running: true
+        command: ["bash", "-c", `test -f '${root.configDir}/hyprland.json' && ! test -f '${root.configDir}/compositor.json' && mv '${root.configDir}/hyprland.json' '${root.configDir}/compositor.json' && echo 'Migrated hyprland.json to compositor.json' || true`]
+    }
+
+    // ============================================
+    // THEME MODULE
+    // ============================================
+    Timer {
+        id: themeSaveDebounce
+        interval: 300
+        repeat: false
+        onTriggered: {
+            if (root.themeReady && !root.pauseAutoSave) {
+                themeLoader.writeAdapter();
+            }
+        }
+    }
+
+    FileView {
+        id: themeLoader
+        path: root.configDir + "/theme.json"
+        atomicWrites: true
+        watchChanges: true
+        onLoaded: {
+            if (!root.themeReady) {
+                validateModule("theme", themeLoader, ThemeDefaults.data, () => {
+                    root.themeReady = true;
+                });
+            }
+        }
+        onLoadFailed: function(error) { if (error.toString().includes("FileNotFound") && !root.themeReady) {
+                handleMissingConfig("theme", themeLoader, ThemeDefaults.data, () => {
+                    root.themeReady = true;
+                });
+            }
+        }
+        onFileChanged: {
+            root.pauseAutoSave = true;
+            reload();
+            root.pauseAutoSave = false;
+        }
+        onPathChanged: reload()
+        onAdapterUpdated: {
+            if (root.themeReady && !root.pauseAutoSave) {
+                themeSaveDebounce.restart();
+            }
+        }
+
+        adapter: JsonAdapter {
+            property bool oledMode: false
+            property bool lightMode: false
+            property int roundness: 16
+            property string font: "Roboto Condensed"
+            property int fontSize: 14
+            property string monoFont: "Iosevka Nerd Font Mono"
+            property int monoFontSize: 14
+            property bool tintIcons: false
+            property bool enableCorners: true
+            property bool dynamicColor: false
+            property int animDuration: 300
+            property real animScale: 1.0
+            property string animStyle: "m3"
+            property real shadowOpacity: 0.5
+            property string shadowColor: "shadow"
+            property int shadowXOffset: 0
+            property int shadowYOffset: 0
+            property real shadowBlur: 1
+
+            property JsonObject srBg: JsonObject {
+                property string label: "Background"
+                property list<var> gradient: [["background", 0.0]]
+                property string gradientType: "linear"
+                property int gradientAngle: 0
+                property real gradientCenterX: 0.5
+                property real gradientCenterY: 0.5
+                property real halftoneDotMin: 0.0
+                property real halftoneDotMax: 2.0
+                property real halftoneStart: 0.0
+                property real halftoneEnd: 1.0
+                property string halftoneDotColor: "surface"
+                property string halftoneBackgroundColor: "background"
+                property list<var> border: ["surfaceBright", 0]
+                property string itemColor: "overBackground"
+                property real opacity: 1.0
+            }
+
+            property JsonObject srPopup: JsonObject {
+                property string label: "Popup"
+                property list<var> gradient: [["background", 0.0]]
+                property string gradientType: "linear"
+                property int gradientAngle: 0
+                property real gradientCenterX: 0.5
+                property real gradientCenterY: 0.5
+                property real halftoneDotMin: 0.0
+                property real halftoneDotMax: 2.0
+                property real halftoneStart: 0.0
+                property real halftoneEnd: 1.0
+                property string halftoneDotColor: "surface"
+                property string halftoneBackgroundColor: "background"
+                property list<var> border: ["surfaceBright", 2]
+                property string itemColor: "overBackground"
+                property real opacity: 1.0
+            }
+
+            property JsonObject srInternalBg: JsonObject {
+                property string label: "Internal BG"
+                property list<var> gradient: [["background", 0.0]]
+                property string gradientType: "linear"
+                property int gradientAngle: 0
+                property real gradientCenterX: 0.5
+                property real gradientCenterY: 0.5
+                property real halftoneDotMin: 0.0
+                property real halftoneDotMax: 2.0
+                property real halftoneStart: 0.0
+                property real halftoneEnd: 1.0
+                property string halftoneDotColor: "surface"
+                property string halftoneBackgroundColor: "background"
+                property list<var> border: ["surfaceBright", 0]
+                property string itemColor: "overBackground"
+                property real opacity: 1.0
+            }
+
+            property JsonObject srBarBg: JsonObject {
+                property string label: "Bar BG"
+                property list<var> gradient: [["surfaceDim", 0.0]]
+                property string gradientType: "linear"
+                property int gradientAngle: 0
+                property real gradientCenterX: 0.5
+                property real gradientCenterY: 0.5
+                property real halftoneDotMin: 0.0
+                property real halftoneDotMax: 2.0
+                property real halftoneStart: 0.0
+                property real halftoneEnd: 1.0
+                property string halftoneDotColor: "surface"
+                property string halftoneBackgroundColor: "surfaceDim"
+                property list<var> border: ["surfaceBright", 0]
+                property string itemColor: "overBackground"
+                property real opacity: 0.0
+            }
+
+            property JsonObject srPane: JsonObject {
+                property string label: "Pane"
+                property list<var> gradient: [["surface", 0.0]]
+                property string gradientType: "linear"
+                property int gradientAngle: 0
+                property real gradientCenterX: 0.5
+                property real gradientCenterY: 0.5
+                property real halftoneDotMin: 0.0
+                property real halftoneDotMax: 2.0
+                property real halftoneStart: 0.0
+                property real halftoneEnd: 1.0
+                property string halftoneDotColor: "surfaceBright"
+                property string halftoneBackgroundColor: "surface"
+                property list<var> border: ["surfaceBright", 0]
+                property string itemColor: "overBackground"
+                property real opacity: 1.0
+            }
+
+            property JsonObject srCommon: JsonObject {
+                property string label: "Common"
+                property list<var> gradient: [["surface", 0.0]]
+                property string gradientType: "linear"
+                property int gradientAngle: 0
+                property real gradientCenterX: 0.5
+                property real gradientCenterY: 0.5
+                property real halftoneDotMin: 0.0
+                property real halftoneDotMax: 2.0
+                property real halftoneStart: 0.0
+                property real halftoneEnd: 1.0
+                property string halftoneDotColor: "background"
+                property string halftoneBackgroundColor: "surface"
+                property list<var> border: ["surfaceBright", 0]
+                property string itemColor: "overBackground"
+                property real opacity: 1.0
+            }
+
+            property JsonObject srFocus: JsonObject {
+                property string label: "Focus"
+                property list<var> gradient: [["surfaceBright", 0.0]]
+                property string gradientType: "linear"
+                property int gradientAngle: 0
+                property real gradientCenterX: 0.5
+                property real gradientCenterY: 0.5
+                property real halftoneDotMin: 0.0
+                property real halftoneDotMax: 2.0
+                property real halftoneStart: 0.0
+                property real halftoneEnd: 1.0
+                property string halftoneDotColor: "surfaceVariant"
+                property string halftoneBackgroundColor: "surfaceBright"
+                property list<var> border: ["surfaceBright", 0]
+                property string itemColor: "overBackground"
+                property real opacity: 1.0
+            }
+
+            property JsonObject srPrimary: JsonObject {
+                property string label: "Primary"
+                property list<var> gradient: [["primary", 0.0]]
+                property string gradientType: "linear"
+                property int gradientAngle: 0
+                property real gradientCenterX: 0.5
+                property real gradientCenterY: 0.5
+                property real halftoneDotMin: 0.0
+                property real halftoneDotMax: 2.0
+                property real halftoneStart: 0.0
+                property real halftoneEnd: 1.0
+                property string halftoneDotColor: "overPrimaryContainer"
+                property string halftoneBackgroundColor: "primary"
+                property list<var> border: ["primary", 0]
+                property string itemColor: "overPrimary"
+                property real opacity: 1.0
+            }
+
+            property JsonObject srPrimaryFocus: JsonObject {
+                property string label: "Primary Focus"
+                property list<var> gradient: [["overPrimaryContainer", 0.0]]
+                property string gradientType: "linear"
+                property int gradientAngle: 0
+                property real gradientCenterX: 0.5
+                property real gradientCenterY: 0.5
+                property real halftoneDotMin: 0.0
+                property real halftoneDotMax: 2.0
+                property real halftoneStart: 0.0
+                property real halftoneEnd: 1.0
+                property string halftoneDotColor: "primary"
+                property string halftoneBackgroundColor: "overPrimaryContainer"
+                property list<var> border: ["overBackground", 0]
+                property string itemColor: "overPrimary"
+                property real opacity: 1.0
+            }
+
+            property JsonObject srOverPrimary: JsonObject {
+                property string label: "Over Primary"
+                property list<var> gradient: [["overPrimary", 0.0]]
+                property string gradientType: "linear"
+                property int gradientAngle: 0
+                property real gradientCenterX: 0.5
+                property real gradientCenterY: 0.5
+                property real halftoneDotMin: 0.0
+                property real halftoneDotMax: 2.0
+                property real halftoneStart: 0.0
+                property real halftoneEnd: 1.0
+                property string halftoneDotColor: "primaryContainer"
+                property string halftoneBackgroundColor: "overPrimary"
+                property list<var> border: ["overPrimary", 0]
+                property string itemColor: "primary"
+                property real opacity: 1.0
+            }
+
+            property JsonObject srSecondary: JsonObject {
+                property string label: "Secondary"
+                property list<var> gradient: [["secondary", 0.0]]
+                property string gradientType: "linear"
+                property int gradientAngle: 0
+                property real gradientCenterX: 0.5
+                property real gradientCenterY: 0.5
+                property real halftoneDotMin: 0.0
+                property real halftoneDotMax: 2.0
+                property real halftoneStart: 0.0
+                property real halftoneEnd: 1.0
+                property string halftoneDotColor: "overSecondaryContainer"
+                property string halftoneBackgroundColor: "secondary"
+                property list<var> border: ["secondary", 0]
+                property string itemColor: "overSecondary"
+                property real opacity: 1.0
+            }
+
+            property JsonObject srSecondaryFocus: JsonObject {
+                property string label: "Secondary Focus"
+                property list<var> gradient: [["overSecondaryContainer", 0.0]]
+                property string gradientType: "linear"
+                property int gradientAngle: 0
+                property real gradientCenterX: 0.5
+                property real gradientCenterY: 0.5
+                property real halftoneDotMin: 0.0
+                property real halftoneDotMax: 2.0
+                property real halftoneStart: 0.0
+                property real halftoneEnd: 1.0
+                property string halftoneDotColor: "secondary"
+                property string halftoneBackgroundColor: "overSecondaryContainer"
+                property list<var> border: ["overBackground", 0]
+                property string itemColor: "overSecondary"
+                property real opacity: 1.0
+            }
+
+            property JsonObject srOverSecondary: JsonObject {
+                property string label: "Over Secondary"
+                property list<var> gradient: [["overSecondary", 0.0]]
+                property string gradientType: "linear"
+                property int gradientAngle: 0
+                property real gradientCenterX: 0.5
+                property real gradientCenterY: 0.5
+                property real halftoneDotMin: 0.0
+                property real halftoneDotMax: 2.0
+                property real halftoneStart: 0.0
+                property real halftoneEnd: 1.0
+                property string halftoneDotColor: "secondaryContainer"
+                property string halftoneBackgroundColor: "overSecondary"
+                property list<var> border: ["overSecondary", 0]
+                property string itemColor: "secondary"
+                property real opacity: 1.0
+            }
+
+            property JsonObject srTertiary: JsonObject {
+                property string label: "Tertiary"
+                property list<var> gradient: [["tertiary", 0.0]]
+                property string gradientType: "linear"
+                property int gradientAngle: 0
+                property real gradientCenterX: 0.5
+                property real gradientCenterY: 0.5
+                property real halftoneDotMin: 0.0
+                property real halftoneDotMax: 2.0
+                property real halftoneStart: 0.0
+                property real halftoneEnd: 1.0
+                property string halftoneDotColor: "overTertiaryContainer"
+                property string halftoneBackgroundColor: "tertiary"
+                property list<var> border: ["tertiary", 0]
+                property string itemColor: "overTertiary"
+                property real opacity: 1.0
+            }
+
+            property JsonObject srTertiaryFocus: JsonObject {
+                property string label: "Tertiary Focus"
+                property list<var> gradient: [["overTertiaryContainer", 0.0]]
+                property string gradientType: "linear"
+                property int gradientAngle: 0
+                property real gradientCenterX: 0.5
+                property real gradientCenterY: 0.5
+                property real halftoneDotMin: 0.0
+                property real halftoneDotMax: 2.0
+                property real halftoneStart: 0.0
+                property real halftoneEnd: 1.0
+                property string halftoneDotColor: "tertiary"
+                property string halftoneBackgroundColor: "overTertiaryContainer"
+                property list<var> border: ["overBackground", 0]
+                property string itemColor: "overTertiary"
+                property real opacity: 1.0
+            }
+
+            property JsonObject srOverTertiary: JsonObject {
+                property string label: "Over Tertiary"
+                property list<var> gradient: [["overTertiary", 0.0]]
+                property string gradientType: "linear"
+                property int gradientAngle: 0
+                property real gradientCenterX: 0.5
+                property real gradientCenterY: 0.5
+                property real halftoneDotMin: 0.0
+                property real halftoneDotMax: 2.0
+                property real halftoneStart: 0.0
+                property real halftoneEnd: 1.0
+                property string halftoneDotColor: "tertiaryContainer"
+                property string halftoneBackgroundColor: "overTertiary"
+                property list<var> border: ["overTertiary", 0]
+                property string itemColor: "tertiary"
+                property real opacity: 1.0
+            }
+
+            property JsonObject srError: JsonObject {
+                property string label: "Error"
+                property list<var> gradient: [["error", 0.0]]
+                property string gradientType: "linear"
+                property int gradientAngle: 0
+                property real gradientCenterX: 0.5
+                property real gradientCenterY: 0.5
+                property real halftoneDotMin: 0.0
+                property real halftoneDotMax: 2.0
+                property real halftoneStart: 0.0
+                property real halftoneEnd: 1.0
+                property string halftoneDotColor: "overErrorContainer"
+                property string halftoneBackgroundColor: "error"
+                property list<var> border: ["error", 0]
+                property string itemColor: "overError"
+                property real opacity: 1.0
+            }
+
+            property JsonObject srErrorFocus: JsonObject {
+                property string label: "Error Focus"
+                property list<var> gradient: [["overBackground", 0.0]]
+                property string gradientType: "linear"
+                property int gradientAngle: 0
+                property real gradientCenterX: 0.5
+                property real gradientCenterY: 0.5
+                property real halftoneDotMin: 0.0
+                property real halftoneDotMax: 2.0
+                property real halftoneStart: 0.0
+                property real halftoneEnd: 1.0
+                property string halftoneDotColor: "error"
+                property string halftoneBackgroundColor: "overErrorContainer"
+                property list<var> border: ["overBackground", 0]
+                property string itemColor: "overError"
+                property real opacity: 1.0
+            }
+
+            property JsonObject srOverError: JsonObject {
+                property string label: "Over Error"
+                property list<var> gradient: [["overError", 0.0]]
+                property string gradientType: "linear"
+                property int gradientAngle: 0
+                property real gradientCenterX: 0.5
+                property real gradientCenterY: 0.5
+                property real halftoneDotMin: 0.0
+                property real halftoneDotMax: 2.0
+                property real halftoneStart: 0.0
+                property real halftoneEnd: 1.0
+                property string halftoneDotColor: "errorContainer"
+                property string halftoneBackgroundColor: "overError"
+                property list<var> border: ["overError", 0]
+                property string itemColor: "error"
+                property real opacity: 1.0
+            }
+        }
+    }
+
+    // ============================================
+    // BAR MODULE
+    // ============================================
+    FileView {
+        id: barLoader
+        path: root.configDir + "/bar.json"
+        atomicWrites: true
+        watchChanges: true
+        onLoaded: {
+            if (!root.barReady) {
+                validateModule("bar", barLoader, BarDefaults.data, () => {
+                    root.barReady = true;
+                });
+            }
+        }
+        onLoadFailed: function(error) { if (error.toString().includes("FileNotFound") && !root.barReady) {
+                handleMissingConfig("bar", barLoader, BarDefaults.data, () => {
+                    root.barReady = true;
+                });
+            }
+        }
+        onFileChanged: {
+            root.pauseAutoSave = true;
+            reload();
+            root.pauseAutoSave = false;
+        }
+        onPathChanged: reload()
+        onAdapterUpdated: {
+            if (root.barReady && !root.pauseAutoSave) {
+                barLoader.writeAdapter();
+            }
+        }
+
+        adapter: JsonAdapter {
+            property string position: "top"
+            property string barMode: "extended"
+            property string launcherIcon: ""
+            property bool launcherIconTint: true
+            property bool launcherIconFullTint: true
+            property int launcherIconSize: 24
+            property string pillStyle: "default"
+            property list<string> screenList: []
+            property bool enableFirefoxPlayer: false
+            property bool enableChromiumPlayer: false
+            property list<var> barColor: [["surface", 0.0]]
+            property bool frameEnabled: false
+            property int frameThickness: 6
+            // Auto-hide settings
+            property bool pinnedOnStartup: true
+            property bool hoverToReveal: true
+            property int hoverRegionHeight: 8
+            property bool showPinButton: true
+            property bool availableOnFullscreen: false
+            property bool use12hFormat: false
+            property bool containBar: false
+            property bool keepBarShadow: false
+            property bool keepBarBorder: false
+            property var hiddenIcons: []
+        }
+    }
+
+    // ============================================
+    // WORKSPACES MODULE
+    // ============================================
+    FileView {
+        id: workspacesLoader
+        path: root.configDir + "/workspaces.json"
+        atomicWrites: true
+        watchChanges: true
+        onLoaded: {
+            if (!root.workspacesReady) {
+                validateModule("workspaces", workspacesLoader, WorkspacesDefaults.data, () => {
+                    root.workspacesReady = true;
+                });
+            }
+        }
+        onLoadFailed: function(error) { if (error.toString().includes("FileNotFound") && !root.workspacesReady) {
+                handleMissingConfig("workspaces", workspacesLoader, WorkspacesDefaults.data, () => {
+                    root.workspacesReady = true;
+                });
+            }
+        }
+        onFileChanged: {
+            root.pauseAutoSave = true;
+            reload();
+            root.pauseAutoSave = false;
+        }
+        onPathChanged: reload()
+        onAdapterUpdated: {
+            if (root.workspacesReady && !root.pauseAutoSave) {
+                workspacesLoader.writeAdapter();
+            }
+        }
+
+        adapter: JsonAdapter {
+            property int shown: 10
+            property bool showAppIcons: true
+            property bool alwaysShowNumbers: false
+            property bool showNumbers: false
+            property bool dynamic: false
+        }
+    }
+
+    // ============================================
+    // OVERVIEW MODULE
+    // ============================================
+    FileView {
+        id: overviewLoader
+        path: root.configDir + "/overview.json"
+        atomicWrites: true
+        watchChanges: true
+        onLoaded: {
+            if (!root.overviewReady) {
+                validateModule("overview", overviewLoader, OverviewDefaults.data, () => {
+                    root.overviewReady = true;
+                });
+            }
+        }
+        onLoadFailed: function(error) { if (error.toString().includes("FileNotFound") && !root.overviewReady) {
+                handleMissingConfig("overview", overviewLoader, OverviewDefaults.data, () => {
+                    root.overviewReady = true;
+                });
+            }
+        }
+        onFileChanged: {
+            root.pauseAutoSave = true;
+            reload();
+            root.pauseAutoSave = false;
+        }
+        onPathChanged: reload()
+        onAdapterUpdated: {
+            if (root.overviewReady && !root.pauseAutoSave) {
+                overviewLoader.writeAdapter();
+            }
+        }
+
+        adapter: JsonAdapter {
+            property int rows: 2
+            property int columns: 5
+            property real scale: 0.1
+            property real workspaceSpacing: 4
+        }
+    }
+
+    // ============================================
+    // NOTCH MODULE
+    // ============================================
+    FileView {
+        id: notchLoader
+        path: root.configDir + "/notch.json"
+        atomicWrites: true
+        watchChanges: true
+        onLoaded: {
+            if (!root.notchReady) {
+                validateModule("notch", notchLoader, NotchDefaults.data, () => {
+                    root.notchReady = true;
+                });
+            }
+        }
+        onLoadFailed: function(error) { if (error.toString().includes("FileNotFound") && !root.notchReady) {
+                handleMissingConfig("notch", notchLoader, NotchDefaults.data, () => {
+                    root.notchReady = true;
+                });
+            }
+        }
+        onFileChanged: {
+            root.pauseAutoSave = true;
+            reload();
+            root.pauseAutoSave = false;
+        }
+        onPathChanged: reload()
+        onAdapterUpdated: {
+            if (root.notchReady && !root.pauseAutoSave) {
+                notchLoader.writeAdapter();
+            }
+        }
+
+        adapter: JsonAdapter {
+            property string theme: "default"
+            property string position: "top"
+            property int hoverRegionHeight: 8
+            property bool keepHidden: false
+            property string noMediaDisplay: "userHost"
+            property string customText: "NothingLess"
+            property bool disableHoverExpansion: true
+            property bool showMetrics: false
+            property bool showDockInIsland: true
+            property int islandButtonSize: 36
+            property bool pinnedOnStartup: true
+        }
+    }
+
+    // ============================================
+    // COMPOSITOR MODULE
+    // ============================================
+    FileView {
+        id: compositorLoader
+        path: root.configDir + "/compositor.json"
+        atomicWrites: true
+        watchChanges: true
+        onLoaded: {
+            if (!root.compositorReady) {
+                validateModule("compositor", compositorLoader, CompositorDefaults.data, () => {
+                    root.compositorReady = true;
+                });
+            }
+        }
+        onLoadFailed: function(error) { if (error.toString().includes("FileNotFound") && !root.compositorReady) {
+                handleMissingConfig("compositor", compositorLoader, CompositorDefaults.data, () => {
+                    root.compositorReady = true;
+                });
+            }
+        }
+        onFileChanged: {
+            root.pauseAutoSave = true;
+            reload();
+            root.pauseAutoSave = false;
+        }
+        onPathChanged: reload()
+        onAdapterUpdated: {
+            if (root.compositorReady) {
+                if (!root.pauseAutoSave) {
+                    compositorLoader.writeAdapter();
+                }
+                GlobalStates.compositorConfigChanged();
+            }
+        }
+
+        adapter: JsonAdapter {
+            // Borders & Rounding
+            property bool showBorder: true
+            property var activeBorderColor: ["primary"]
+            property int borderAngle: 45
+            property var inactiveBorderColor: ["surface"]
+            property int inactiveBorderAngle: 45
+            property int borderSize: 2
+            property int rounding: 16
+            property real roundingPower: 2.0
+            property bool syncRoundness: true
+            property bool syncBorderWidth: false
+            property bool syncBorderColor: false
+            property bool syncShadowOpacity: false
+            property bool syncShadowColor: false
+            property bool resizeOnBorder: false
+            property int extendBorderGrabArea: 15
+            property bool hoverIconOnBorder: true
+
+            // Gaps & Layout
+            property int gapsIn: 2
+            property int gapsOut: 4
+            property string layout: "dwindle"
+            property bool allowTearing: false
+
+            // Snap
+            property bool snapEnabled: true
+            property int snapWindowGap: 10
+            property int snapMonitorGap: 10
+            property bool snapBorderOverlap: false
+            property bool snapRespectGaps: false
+
+            // Opacity & Dim
+            property real activeOpacity: 1.0
+            property real inactiveOpacity: 1.0
+            property real fullscreenOpacity: 1.0
+            property bool dimInactive: false
+            property real dimStrength: 0.5
+            property real dimAround: 0.4
+            property real dimSpecial: 0.2
+
+            // Shadow
+            property bool shadowEnabled: true
+            property int shadowRange: 8
+            property int shadowRenderPower: 3
+            property bool shadowSharp: false
+            property bool shadowIgnoreWindow: true
+            property string shadowColor: "shadow"
+            property string shadowColorInactive: "shadow"
+            property real shadowOpacity: 0.5
+            property string shadowOffset: "0 0"
+            property real shadowScale: 1.0
+
+            // Blur
+            property bool blurEnabled: true
+            property int blurSize: 4
+            property int blurPasses: 2
+            property bool blurIgnoreOpacity: true
+            property bool blurExplicitIgnoreAlpha: false
+            property real blurIgnoreAlphaValue: 0.2
+            property bool blurNewOptimizations: true
+            property bool blurXray: false
+            property real blurNoise: 0.0
+            property real blurContrast: 1.0
+            property real blurBrightness: 1.0
+            property real blurVibrancy: 0.0
+            property real blurVibrancyDarkness: 0.0
+            property bool blurSpecial: true
+            property bool blurPopups: false
+            property real blurPopupsIgnorealpha: 0.2
+            property bool blurInputMethods: false
+            property real blurInputMethodsIgnorealpha: 0.2
+
+            // Animations
+            property bool animationsEnabled: true
+
+            // Input: Keyboard
+            property string kbLayout: "us"
+            property string kbVariant: ""
+            property string kbOptions: ""
+            property bool numlockByDefault: false
+            property int repeatRate: 25
+            property int repeatDelay: 600
+
+            // Input: Mouse
+            property real mouseSensitivity: 0.0
+            property string mouseAccelProfile: ""
+            property int followMouse: 1
+            property bool mouseNaturalScroll: false
+            property real mouseScrollFactor: 1.0
+            property bool mouseLeftHanded: false
+            property bool mouseRefocus: false
+            property int floatSwitchOverrideFocus: 0
+
+            // Input: Touchpad
+            property bool touchpadDisableWhileTyping: true
+            property bool touchpadNaturalScroll: true
+            property bool touchpadTapToClick: true
+            property bool touchpadClickfingerBehavior: false
+            property string touchpadTapButtonMap: ""
+            property bool touchpadMiddleButtonEmulation: false
+            property int touchpadDragLock: 0
+            property real touchpadScrollFactor: 1.0
+
+            // Cursor
+            property bool noHardwareCursors: false
+            property bool enableHyprcursor: true
+            property bool noWarps: false
+            property bool persistentWarps: false
+            property bool warpOnChangeWorkspace: false
+            property real cursorZoomFactor: 1.0
+            property int cursorInactiveTimeout: 0
+            property bool cursorHideOnKeyPress: false
+            property bool cursorHideOnTouch: false
+            property bool cursorHideOnTablet: false
+
+            // Gestures (workspace swipe parameters)
+            property bool workspaceSwipeCreateNew: true
+            property bool workspaceSwipeForever: false
+            property real workspaceSwipeCancelRatio: 0.5
+            property int workspaceSwipeMinSpeedToForce: 30
+            property bool workspaceSwipeDirectionLock: true
+            property bool workspaceSwipeUseR: false
+            property int workspaceSwipeDistance: 300
+            property bool workspaceSwipeInvert: true
+            property bool workspaceSwipeTouch: false
+            property bool workspaceSwipeTouchInvert: false
+
+            // Additional Gesture Parameters
+            property int workspaceSwipeDirectionLockThreshold: 10
+            property int gestureCloseTimeout: 1000
+
+            // Gesture Bindings (trackpad gestures — End4Dots style + extras)
+            property bool gesture3FingerSwipe: true
+            property bool gesture3FingerPinch: true
+            property bool gesture4FingerWorkspace: true
+            property bool gesture4FingerOverview: true
+            property bool gesture4FingerClose: false
+            property bool gesture3FingerScratchpad: false
+
+            // Dwindle Layout
+            property bool dwindlePreserveSplit: true
+            property bool dwindlePseudotile: false
+            property int dwindleForceSplit: 0
+            property bool dwindleSmartSplit: true
+            property real dwindleDefaultSplitRatio: 1.0
+            property real dwindleSplitWidthMultiplier: 1.0
+            property bool dwindlePermanentDirectionOverride: false
+            property bool dwindleUseActiveForSplits: true
+            property bool dwindleSmartResizing: true
+            property real dwindleSpecialScaleFactor: 0.8
+
+            // Master Layout
+            property string masterOrientation: "left"
+            property real masterMfact: 0.55
+            property string masterNewStatus: "slave"
+            property bool masterNewOnTop: false
+            property string masterNewOnActive: "none"
+            property bool masterSmartResizing: true
+            property real masterSpecialScaleFactor: 0.8
+            property bool masterAllowSmallSplit: false
+
+            // Scrolling Layout
+            property real scrollingColumnWidth: 0.3
+            property string scrollingExplicitColumnWidths: ""
+            property string scrollingDirection: "right"
+            property bool scrollingFullscreenOnOneColumn: true
+            property string scrollingFocusFitMethod: "center"
+            property bool scrollingFollowFocus: true
+            property real scrollingFollowMinVisible: 0.1
+
+            // Free Layout
+            property int freeGridSize: 20
+            property int freeSnapSensitivity: 10
+            property bool freeSnapEdges: true
+            property bool freeSnapCenter: true
+            property int freeSnapGaps: 4
+            property bool freeTileByDefault: false
+            property bool freeMaximizedByDefault: false
+            property bool smartResizeAnchors: true
+
+            // XWayland
+            property bool xwaylandEnabled: true
+            property bool xwaylandForceZeroScaling: false
+            property bool xwaylandUseNearestNeighbor: true
+
+            // Monitor Globals
+            property int vrr: 0
+            property bool vfr: true
+            property bool mouseMoveEnablesDpms: false
+            property bool keyPressEnablesDpms: false
+
+            // Misc
+            property string renderBackend: "opengl"
+            property bool disableAutoreload: false
+            property bool focusOnActivate: false
+            property bool animateManualResizes: false
+            property bool animateMouseWindowdragging: true
+            property bool disableHyprlandLogo: true
+            property bool disableSplashRendering: false
+            property int forceDefaultWallpaper: -1
+
+            // Ecosystem
+            property bool noUpdateNews: true
+            property bool enforcePermissions: false
+        }
+    }
+
+    // ============================================
+    // PERFORMANCE MODULE
+    // ============================================
+    FileView {
+        id: performanceLoader
+        path: root.configDir + "/performance.json"
+        atomicWrites: true
+        watchChanges: true
+        onLoaded: {
+            if (!root.performanceReady) {
+                validateModule("performance", performanceLoader, PerformanceDefaults.data, () => {
+                    root.performanceReady = true;
+                });
+            }
+        }
+        onLoadFailed: function(error) { if (error.toString().includes("FileNotFound") && !root.performanceReady) {
+                handleMissingConfig("performance", performanceLoader, PerformanceDefaults.data, () => {
+                    root.performanceReady = true;
+                });
+            }
+        }
+        onFileChanged: {
+            root.pauseAutoSave = true;
+            reload();
+            root.pauseAutoSave = false;
+        }
+        onPathChanged: reload()
+        onAdapterUpdated: {
+            if (root.performanceReady && !root.pauseAutoSave) {
+                performanceLoader.writeAdapter();
+            }
+        }
+
+        adapter: JsonAdapter {
+            // ─── Rendering ──────────────────────────────
+            property string renderBackend: "auto"
+            property int maxRenderThreads: 6
+            property bool gpuAcceleratedEffects: true
+            property bool layerEffects: true
+
+            // ─── Video Wallpaper ────────────────────────
+            property string videoDecoder: "auto"
+            property int videoTargetFps: 24
+            property string videoResolutionLimit: "native"
+
+            // ─── Visual Quality ─────────────────────────
+            property string shadowQuality: "high"
+            property string blurQuality: "medium"
+            property bool cornerRendering: true
+            property bool frameEffect: false
+            property int thumbnailCacheSize: 50
+
+            // ─── Animation ──────────────────────────────
+            property bool blurTransition: true
+            property bool windowPreview: true
+            property bool wavyLine: true
+            property bool rotateCoverArt: true
+
+            // ─── Dashboard ──────────────────────────────
+            property bool dashboardPersistTabs: false
+            property int dashboardMaxPersistentTabs: 2
+
+            // ─── Monitoring ─────────────────────────────
+            property int systemMonitorInterval: 2000
+            property int backgroundServicePolling: 5000
+
+            // ─── Boot ───────────────────────────────────
+            property bool showSplash: true
+            property int splashDuration: 3000
+        }
+    }
+
+    // ============================================
+    // WEATHER MODULE
+    // ============================================
+    FileView {
+        id: weatherLoader
+        path: root.configDir + "/weather.json"
+        atomicWrites: true
+        watchChanges: true
+        onLoaded: {
+            if (!root.weatherReady) {
+                validateModule("weather", weatherLoader, WeatherDefaults.data, () => {
+                    root.weatherReady = true;
+                });
+            }
+        }
+        onLoadFailed: function(error) { if (error.toString().includes("FileNotFound") && !root.weatherReady) {
+                handleMissingConfig("weather", weatherLoader, WeatherDefaults.data, () => {
+                    root.weatherReady = true;
+                });
+            }
+        }
+        onFileChanged: {
+            root.pauseAutoSave = true;
+            reload();
+            root.pauseAutoSave = false;
+        }
+        onPathChanged: reload()
+        onAdapterUpdated: {
+            if (root.weatherReady && !root.pauseAutoSave) {
+                weatherLoader.writeAdapter();
+            }
+        }
+
+        adapter: JsonAdapter {
+            property string location: ""
+            property string unit: "C"
+        }
+    }
+
+    // ============================================
+    // DESKTOP MODULE
+    // ============================================
+    FileView {
+        id: desktopLoader
+        path: root.configDir + "/desktop.json"
+        atomicWrites: true
+        watchChanges: true
+        onLoaded: {
+            if (!root.desktopReady) {
+                validateModule("desktop", desktopLoader, DesktopDefaults.data, () => {
+                    root.desktopReady = true;
+                });
+            }
+        }
+        onLoadFailed: function(error) { if (error.toString().includes("FileNotFound") && !root.desktopReady) {
+                handleMissingConfig("desktop", desktopLoader, DesktopDefaults.data, () => {
+                    root.desktopReady = true;
+                });
+            }
+        }
+        onFileChanged: {
+            root.pauseAutoSave = true;
+            reload();
+            root.pauseAutoSave = false;
+        }
+        onPathChanged: reload()
+        onAdapterUpdated: {
+            if (root.desktopReady && !root.pauseAutoSave) {
+                desktopLoader.writeAdapter();
+            }
+        }
+
+        adapter: JsonAdapter {
+            property bool enabled: false
+            property int iconSize: 40
+            property int spacingVertical: 16
+            property string textColor: "overBackground"
+        }
+    }
+
+    // ============================================
+    // LOCKSCREEN MODULE
+    // ============================================
+    FileView {
+        id: lockscreenLoader
+        path: root.configDir + "/lockscreen.json"
+        atomicWrites: true
+        watchChanges: true
+        onLoaded: {
+            if (!root.lockscreenReady) {
+                validateModule("lockscreen", lockscreenLoader, LockscreenDefaults.data, () => {
+                    root.lockscreenReady = true;
+                });
+            }
+        }
+        onLoadFailed: function(error) { if (error.toString().includes("FileNotFound") && !root.lockscreenReady) {
+                handleMissingConfig("lockscreen", lockscreenLoader, LockscreenDefaults.data, () => {
+                    root.lockscreenReady = true;
+                });
+            }
+        }
+        onFileChanged: {
+            root.pauseAutoSave = true;
+            reload();
+            root.pauseAutoSave = false;
+        }
+        onPathChanged: reload()
+        onAdapterUpdated: {
+            if (root.lockscreenReady && !root.pauseAutoSave) {
+                lockscreenLoader.writeAdapter();
+            }
+        }
+
+        adapter: JsonAdapter {
+            property string position: "bottom"
+        }
+    }
+
+    // ============================================
+    // PREFIX MODULE
+    // ============================================
+    FileView {
+        id: prefixLoader
+        path: root.configDir + "/prefix.json"
+        atomicWrites: true
+        watchChanges: true
+        onLoaded: {
+            if (!root.prefixReady) {
+                validateModule("prefix", prefixLoader, PrefixDefaults.data, () => {
+                    root.prefixReady = true;
+                });
+            }
+        }
+        onLoadFailed: function(error) { if (error.toString().includes("FileNotFound") && !root.prefixReady) {
+                handleMissingConfig("prefix", prefixLoader, PrefixDefaults.data, () => {
+                    root.prefixReady = true;
+                });
+            }
+        }
+        onFileChanged: {
+            root.pauseAutoSave = true;
+            reload();
+            root.pauseAutoSave = false;
+        }
+        onPathChanged: reload()
+        onAdapterUpdated: {
+            if (root.prefixReady && !root.pauseAutoSave) {
+                prefixLoader.writeAdapter();
+            }
+        }
+
+        adapter: JsonAdapter {
+            property string clipboard: "cc"
+            property string emoji: "ee"
+            property string tmux: "tt"
+            property string wallpapers: "ww"
+            property string notes: "nn"
+        }
+    }
+
+    // ============================================
+    // SYSTEM MODULE
+    // ============================================
+    FileView {
+        id: systemLoader
+        path: root.configDir + "/system.json"
+        atomicWrites: true
+        watchChanges: true
+        onLoaded: {
+            if (!root.systemReady) {
+                validateModule("system", systemLoader, SystemDefaults.data, () => {
+                    root.systemReady = true;
+                });
+            }
+        }
+        onLoadFailed: function(error) { if (error.toString().includes("FileNotFound") && !root.systemReady) {
+                handleMissingConfig("system", systemLoader, SystemDefaults.data, () => {
+                    root.systemReady = true;
+                });
+            }
+        }
+        onFileChanged: {
+            root.pauseAutoSave = true;
+            reload();
+            root.pauseAutoSave = false;
+        }
+        onPathChanged: reload()
+        onAdapterUpdated: {
+            if (root.systemReady && !root.pauseAutoSave) {
+                systemLoader.writeAdapter();
+            }
+        }
+
+        adapter: JsonAdapter {
+            property list<string> disks: ["/"]
+            property JsonObject updateService: JsonObject {
+                property bool enabled: true
+                property int checkIntervalMs: 3600000
+            }
+            property JsonObject batteryNotifications: JsonObject {
+                property bool enabled: true
+                property int lowThreshold: 20
+                property int criticalThreshold: 10
+                property bool autoPowerSave: false
+                property int powerSaveThreshold: 15
+                property bool chargeLimitEnabled: false
+                property int chargeLimit: 80
+            }
+            property JsonObject idle: JsonObject {
+                property JsonObject general: JsonObject {
+                    property string lock_cmd: "nothingless lock"
+                    property string before_sleep_cmd: "loginctl lock-session"
+                    property string after_sleep_cmd: "nothingless screen on"
+                }
+                property list<var> listeners: [
+                    {
+                        "timeout": 150,
+                        "onTimeout": "nothingless brightness 10 -s",
+                        "onResume": "nothingless brightness -r"
+                    },
+                    {
+                        "timeout": 300,
+                        "onTimeout": "loginctl lock-session"
+                    },
+                    {
+                        "timeout": 330,
+                        "onTimeout": "nothingless screen off",
+                        "onResume": "nothingless screen on"
+                    },
+                    {
+                        "timeout": 1800,
+                        "onTimeout": "nothingless suspend"
+                    }
+                ]
+            }
+            property JsonObject ocr: JsonObject {
+                property bool eng: true
+                property bool spa: true
+                property bool lat: false
+                property bool jpn: false
+                property bool chi_sim: false
+                property bool chi_tra: false
+                property bool kor: false
+            }
+            property JsonObject pomodoro: JsonObject {
+                property int workTime: 1500
+                property int restTime: 300
+                property bool autoStart: false
+                property bool syncSpotify: false
+            }
+        }
+    }
+
+    // ============================================
+    // DOCK MODULE
+    // ============================================
+    FileView {
+        id: dockLoader
+        path: root.configDir + "/dock.json"
+        atomicWrites: true
+        watchChanges: true
+        onLoaded: {
+            if (!root.dockReady) {
+                validateModule("dock", dockLoader, DockDefaults.data, () => {
+                    root.dockReady = true;
+                });
+            }
+        }
+        onLoadFailed: function(error) { if (error.toString().includes("FileNotFound") && !root.dockReady) {
+                handleMissingConfig("dock", dockLoader, DockDefaults.data, () => {
+                    root.dockReady = true;
+                });
+            }
+        }
+        onFileChanged: {
+            root.pauseAutoSave = true;
+            reload();
+            root.pauseAutoSave = false;
+        }
+        onPathChanged: reload()
+        onAdapterUpdated: {
+            if (root.dockReady && !root.pauseAutoSave) {
+                dockLoader.writeAdapter();
+            }
+        }
+
+        adapter: JsonAdapter {
+            property bool enabled: false
+            property string theme: "default"
+            property string position: "bottom"
+            property int height: 56
+            property int iconSize: 40
+            property int spacing: 4
+            property int margin: 8
+            property int hoverRegionHeight: 4
+            property bool pinnedOnStartup: false
+            property bool hoverToReveal: true
+            property bool availableOnFullscreen: false
+            property bool showRunningIndicators: true
+            property bool showPinButton: true
+            property bool showOverviewButton: true
+            property list<string> ignoredAppRegexes: ["quickshell.*", "xdg-desktop-portal.*"]
+            property list<string> screenList: []
+            property bool keepHidden: false
+        }
+    }
+
+    // Pinned apps (per-user)
+    property bool pinnedAppsReady: false
+
+    FileView {
+        id: pinnedAppsLoader
+        path: Quickshell.dataPath("pinnedapps.json")
+        atomicWrites: true
+        watchChanges: true
+        onLoaded: {
+            if (!root.pinnedAppsReady) {
+                var raw = text();
+                if (!raw || raw.trim().length === 0) {
+                    console.log("pinnedapps.json not found, creating with default values...");
+                    pinnedAppsLoader.writeAdapter();
+                }
+                root.pinnedAppsReady = true;
+            }
+        }
+        onFileChanged: {
+            root.pauseAutoSave = true;
+            reload();
+            root.pauseAutoSave = false;
+        }
+        onPathChanged: reload()
+        onAdapterUpdated: {
+            if (root.pinnedAppsReady && !root.pauseAutoSave) {
+                pinnedAppsLoader.writeAdapter();
+            }
+        }
+
+        adapter: JsonAdapter {
+            property list<string> apps: ["kitty"]
+        }
+    }
+
+    // ============================================
+    // AI MODULE
+    // ============================================
+    FileView {
+        id: aiLoader
+        path: root.configDir + "/ai.json"
+        atomicWrites: true
+        watchChanges: true
+        onLoaded: {
+            if (!root.aiReady) {
+                validateModule("ai", aiLoader, AiDefaults.data, () => {
+                    root.aiReady = true;
+                });
+            }
+        }
+        onLoadFailed: function(error) { if (error.toString().includes("FileNotFound") && !root.aiReady) {
+                handleMissingConfig("ai", aiLoader, AiDefaults.data, () => {
+                    root.aiReady = true;
+                });
+            }
+        }
+        onFileChanged: {
+            root.pauseAutoSave = true;
+            reload();
+            root.pauseAutoSave = false;
+        }
+        onPathChanged: reload()
+        onAdapterUpdated: {
+            if (root.aiReady && !root.pauseAutoSave) {
+                aiLoader.writeAdapter();
+            }
+        }
+
+        adapter: JsonAdapter {
+            property string systemPrompt: "You are a helpful assistant running on a Linux system. You have access to some tools to control the system."
+            property string tool: "none" // legacy, ignored in favor of enabledTools
+            property list<var> enabledTools: []
+            property list<var> toolAllowlist: []
+            property bool toolAutoApprove: false
+            property list<var> extraModels: []
+            // NOTE: agents used to live here as `property list<var> agents`.
+            // That was the source of a persistence bug: list<var> re-
+            // assignments inside a JsonAdapter don't reliably emit
+            // onAdapterUpdated, so agent additions never reached disk
+            // and were lost on reboot. The list now lives as per-file
+            // JSON under ~/.local/share/nothingless/agents/<id>.json,
+            // managed by the AgentStore singleton. See AgentStore.qml.
+            property string defaultModel: "gemini-2.0-flash"
+            property int sidebarWidth: 400
+            property string sidebarPosition: "right"
+            property bool sidebarPinnedOnStartup: false
+            // Default mode for new chats: "chat" (no tools) | "agent" (use tools)
+            property string defaultMode: "agent"
+            // Default agent binding for new chats. "" = all agents; otherwise an agent id.
+            property string defaultAgentId: ""
+            // Custom OpenAI-compatible provider
+            property string customEndpoint: ""
+            property string customCurlTemplate: ""
+        }
+    }
+
+    // Keybinds (binds.json)
+    // Timer to repair keybinds after initial load
+    Timer {
+        id: repairKeybindsTimer
+        interval: 500
+        repeat: false
+        onTriggered: {
+            repairKeybinds();
+        }
+    }
+
+
+    // Timer to create binds.json if missing after initial load
+    Timer {
+        id: createKeybindsTimer
+        interval: 1000
+        repeat: false
+        onTriggered: {
+            const raw = keybindsLoader.text();
+            if (!raw || raw.trim().length === 0) {
+                console.log("binds.json still missing after delay, creating...");
+                keybindsLoader.writeAdapter();
+                repairKeybindsTimer.start();
+            }
+        }
+    }
+    // Repair missing binds
+    function repairKeybinds() {
+        const raw = keybindsLoader.text();
+        if (!raw) return;
+
+        try {
+            const current = JSON.parse(raw);
+            let needsUpdate = false;
+
+            // Ensure nothingless structure exists
+            if (!current.nothingless) {
+                current.nothingless = {};
+                needsUpdate = true;
+            }
+
+            // Migrate nested to flat structure
+            if (current.nothingless.dashboard && typeof current.nothingless.dashboard === "object" && !current.nothingless.dashboard.modifiers) {
+                console.log("Migrating nested nothingless binds to flat structure...");
+                const nested = current.nothingless.dashboard;
+                
+                // Map old names to new names and update arguments
+                if (nested.widgets) {
+                    current.nothingless.launcher = nested.widgets;
+                    current.nothingless.launcher.argument = "nothingless run launcher";
+                    current.nothingless.launcher.action = createAction(current.nothingless.launcher);
+                }
+                const hadNestedDashboard = !!nested.dashboard;
+                if (hadNestedDashboard) {
+                    current.nothingless.dashboard = nested.dashboard;
+                    current.nothingless.dashboard.argument = "nothingless run dashboard";
+                    current.nothingless.dashboard.action = createAction(current.nothingless.dashboard);
+                }
+                if (nested.assistant) {
+                    current.nothingless.assistant = nested.assistant;
+                    current.nothingless.assistant.argument = "nothingless run assistant";
+                    current.nothingless.assistant.action = createAction(current.nothingless.assistant);
+                }
+                if (nested.clipboard) {
+                    current.nothingless.clipboard = nested.clipboard;
+                    current.nothingless.clipboard.argument = "nothingless run clipboard";
+                    current.nothingless.clipboard.action = createAction(current.nothingless.clipboard);
+                }
+                if (nested.emoji) {
+                    current.nothingless.emoji = nested.emoji;
+                    current.nothingless.emoji.argument = "nothingless run emoji";
+                    current.nothingless.emoji.action = createAction(current.nothingless.emoji);
+                }
+                if (nested.notes) {
+                    current.nothingless.notes = nested.notes;
+                    current.nothingless.notes.argument = "nothingless run notes";
+                    current.nothingless.notes.action = createAction(current.nothingless.notes);
+                }
+                if (nested.tmux) {
+                    current.nothingless.tmux = nested.tmux;
+                    current.nothingless.tmux.argument = "nothingless run tmux";
+                    current.nothingless.tmux.action = createAction(current.nothingless.tmux);
+                }
+                if (nested.wallpapers) {
+                    current.nothingless.wallpapers = nested.wallpapers;
+                    current.nothingless.wallpapers.argument = "nothingless run wallpapers";
+                    current.nothingless.wallpapers.action = createAction(current.nothingless.wallpapers);
+                }
+
+                // Remove the old nested container only if we did NOT migrate a
+                // 'dashboard' sub-property. When nested.dashboard exists the
+                // assignment above already replaced the container with the real
+                // bind object, so delete would destroy the migrated data.
+                if (!hadNestedDashboard) {
+                    delete current.nothingless.dashboard;
+                }
+                needsUpdate = true;
+            }
+
+            if (!current.nothingless.system) {
+                current.nothingless.system = {};
+                needsUpdate = true;
+            }
+
+            // Get default binds from adapter
+            const adapter = keybindsLoader.adapter;
+            if (!adapter || !adapter.nothingless) return;
+
+            // Helper function to create clean bind object
+            function createAction(bindObj) {
+                if (bindObj && bindObj.action) {
+                    return KeybindActions.ensureAction(bindObj.action);
+                }
+                return KeybindActions.actionFromLegacy(bindObj.dispatcher || "", bindObj.argument || "", bindObj.flags || "");
+            }
+
+            function createCleanBind(bindObj) {
+                return {
+                    "modifiers": bindObj.modifiers || [],
+                    "key": bindObj.key || "",
+                    "action": createAction(bindObj)
+                };
+            }
+
+            // Check nothingless core binds
+            const nothinglessKeys = ["launcher", "dashboard", "assistant", "clipboard", "emoji", "notes", "tmux", "wallpapers"];
+            for (const key of nothinglessKeys) {
+                if (!current.nothingless[key] && adapter.nothingless[key]) {
+                    console.log("Adding missing nothingless bind:", key);
+                    current.nothingless[key] = createCleanBind(adapter.nothingless[key]);
+                    needsUpdate = true;
+                } else if (current.nothingless[key] && !current.nothingless[key].action) {
+                    current.nothingless[key].action = createAction(current.nothingless[key]);
+                    delete current.nothingless[key].dispatcher;
+                    delete current.nothingless[key].argument;
+                    delete current.nothingless[key].flags;
+                    needsUpdate = true;
+                }
+            }
+
+            // Get default binds from adapter.defaultNothinglessBinds (fallback for keys not yet in user's nothingless)
+            const defaultBinds = adapter.defaultNothinglessBinds || {};
+            
+            // Check system binds
+            const systemKeys = ["overview", "powermenu", "config", "lockscreen", "tools", "screenshot", "screenrecord", "lens", "reload", "quit", "toggle-metrics", "toggle-gamemode", "toggle-focusmode", "cycle-profile", "toggle-dnd", "toggle-caffeine"];
+            for (const key of systemKeys) {
+                let defaultBind = null;
+                if (adapter.nothingless.system && adapter.nothingless.system[key]) {
+                    defaultBind = adapter.nothingless.system[key];
+                } else if (defaultBinds.system && defaultBinds.system[key]) {
+                    defaultBind = defaultBinds.system[key];
+                }
+                if (!current.nothingless.system[key] && defaultBind) {
+                    console.log("Adding missing system bind:", key);
+                    current.nothingless.system[key] = createCleanBind(defaultBind);
+                    needsUpdate = true;
+                } else if (current.nothingless.system[key] && !current.nothingless.system[key].action) {
+                    current.nothingless.system[key].action = createAction(current.nothingless.system[key]);
+                    delete current.nothingless.system[key].dispatcher;
+                    delete current.nothingless.system[key].argument;
+                    delete current.nothingless.system[key].flags;
+                    needsUpdate = true;
+                }
+            }
+
+            // Migration: if toggle-metrics is still on the old default key (BACKSPACE)
+            // and toggle-gamemode is now also on BACKSPACE, move toggle-metrics to its
+            // new default (M) to avoid Hyprland bind conflicts.
+            if (current.nothingless.system["toggle-metrics"]
+                && current.nothingless.system["toggle-gamemode"]
+                && current.nothingless.system["toggle-metrics"].key === "BACKSPACE"
+                && current.nothingless.system["toggle-gamemode"].key === "BACKSPACE") {
+                console.log("Migrating toggle-metrics: BACKSPACE -> M (to free up the gamemode bind)");
+                const newMetricsDefault = defaultBinds.system && defaultBinds.system["toggle-metrics"];
+                if (newMetricsDefault) {
+                    current.nothingless.system["toggle-metrics"] = createCleanBind(newMetricsDefault);
+                } else {
+                    current.nothingless.system["toggle-metrics"].key = "M";
+                }
+                needsUpdate = true;
+            }
+
+            if (current.custom && current.custom.length > 0) {
+                const normalized = KeybindActions.normalizeCustomBinds(current.custom);
+                if (normalized.changed) {
+                    current.custom = normalized.binds;
+                    needsUpdate = true;
+                }
+            }
+
+            if (needsUpdate) {
+                console.log("Auto-repairing binds.json: adding missing binds");
+                keybindsLoader.setText(JSON.stringify(current, null, 2));
+            }
+        } catch (e) {
+            console.warn("Failed to repair binds.json:", e);
+        }
+    }
+
+    FileView {
+        id: keybindsLoader
+        path: keybindsPath
+        atomicWrites: true
+        watchChanges: true
+        Component.onCompleted: {
+            // Ensure binds.json is created even if onLoaded never fires
+            createKeybindsTimer.start();
+        }
+        onLoaded: {
+            if (!root.keybindsInitialLoadComplete) {
+                var raw = text();
+                if (!raw || raw.trim().length === 0) {
+                    console.log("binds.json not found, creating with default values...");
+                    keybindsLoader.writeAdapter();
+                    repairKeybindsTimer.start();
+                } else {
+                    // File exists, check if it needs repair
+                    repairKeybindsTimer.start();
+                }
+                root.keybindsInitialLoadComplete = true;
+                createKeybindsTimer.start();
+            }
+        }
+        onFileChanged: {
+            root.pauseAutoSave = true;
+            reload();
+            normalizeCustomBinds();
+            root.pauseAutoSave = false;
+        }
+        onPathChanged: {
+            reload();
+            normalizeCustomBinds();
+        }
+        onAdapterUpdated: {
+            if (root.keybindsInitialLoadComplete) {
+                keybindsLoader.writeAdapter();
+            }
+        }
+
+        // Normalize custom binds
+        function normalizeCustomBinds() {
+            if (!adapter || !adapter.custom)
+                return;
+
+            const normalized = KeybindActions.normalizeCustomBinds(adapter.custom);
+            if (normalized.changed) {
+                console.log("Normalizing custom binds: migrating to action format");
+                adapter.custom = normalized.binds;
+            }
+        }
+
+        adapter: JsonAdapter {
+            property JsonObject nothingless: JsonObject {
+                property JsonObject launcher: JsonObject {
+                    property list<string> modifiers: ["SUPER"]
+                    property string key: "Super_L"
+                property var action: ({ "id": "nothingless.launcher", "args": {} })
+            }
+            property JsonObject dashboard: JsonObject {
+                property list<string> modifiers: ["SUPER"]
+                property string key: "D"
+                property var action: ({ "id": "nothingless.dashboard", "args": {} })
+            }
+            property JsonObject assistant: JsonObject {
+                property list<string> modifiers: ["SUPER"]
+                property string key: "A"
+                property var action: ({ "id": "nothingless.assistant", "args": {} })
+            }
+            property JsonObject clipboard: JsonObject {
+                property list<string> modifiers: ["SUPER"]
+                property string key: "V"
+                property var action: ({ "id": "nothingless.clipboard", "args": {} })
+            }
+            property JsonObject emoji: JsonObject {
+                property list<string> modifiers: ["SUPER"]
+                property string key: "PERIOD"
+                property var action: ({ "id": "nothingless.emoji", "args": {} })
+            }
+            property JsonObject notes: JsonObject {
+                property list<string> modifiers: ["SUPER"]
+                property string key: "N"
+                property var action: ({ "id": "nothingless.notes", "args": {} })
+            }
+            property JsonObject tmux: JsonObject {
+                property list<string> modifiers: ["SUPER"]
+                property string key: "T"
+                property var action: ({ "id": "nothingless.tmux", "args": {} })
+            }
+            property JsonObject wallpapers: JsonObject {
+                property list<string> modifiers: ["SUPER"]
+                property string key: "COMMA"
+                property var action: ({ "id": "nothingless.wallpapers", "args": {} })
+            }
+            property JsonObject system: JsonObject {
+                property JsonObject config: JsonObject {
+                    property list<string> modifiers: ["SUPER", "SHIFT"]
+                    property string key: "C"
+                    property var action: ({ "id": "nothingless.config", "args": {} })
+                }
+                property JsonObject lockscreen: JsonObject {
+                    property list<string> modifiers: ["SUPER"]
+                    property string key: "L"
+                    property var action: ({ "id": "nothingless.lock", "args": {} })
+                }
+                property JsonObject overview: JsonObject {
+                    property list<string> modifiers: ["SUPER"]
+                    property string key: "TAB"
+                    property var action: ({ "id": "nothingless.overview", "args": {} })
+                }
+                property JsonObject powermenu: JsonObject {
+                    property list<string> modifiers: ["SUPER"]
+                    property string key: "ESCAPE"
+                    property var action: ({ "id": "nothingless.powermenu", "args": {} })
+                }
+                property JsonObject tools: JsonObject {
+                    property list<string> modifiers: ["SUPER"]
+                    property string key: "S"
+                    property var action: ({ "id": "nothingless.tools", "args": {} })
+                }
+                property JsonObject screenshot: JsonObject {
+                    property list<string> modifiers: ["SUPER", "SHIFT"]
+                    property string key: "S"
+                    property var action: ({ "id": "nothingless.screenshot", "args": {} })
+                }
+                property JsonObject screenrecord: JsonObject {
+                    property list<string> modifiers: ["SUPER", "SHIFT"]
+                    property string key: "R"
+                    property var action: ({ "id": "nothingless.screenrecord", "args": {} })
+                }
+                property JsonObject lens: JsonObject {
+                    property list<string> modifiers: ["SUPER", "SHIFT"]
+                    property string key: "A"
+                    property var action: ({ "id": "nothingless.lens", "args": {} })
+                }
+                property JsonObject reload: JsonObject {
+                    property list<string> modifiers: ["SUPER", "ALT"]
+                    property string key: "B"
+                    property var action: ({ "id": "nothingless.reload", "args": {} })
+                }
+                property JsonObject quit: JsonObject {
+                    property list<string> modifiers: ["SUPER", "CTRL", "ALT"]
+                    property string key: "B"
+                    property var action: ({ "id": "nothingless.quit", "args": {} })
+                }
+            }
+            }
+            // Default getters
+            readonly property var defaultNothinglessBinds: {
+                "nothingless": {
+                    "launcher": { "modifiers": ["SUPER"], "key": "Super_L", "action": { "id": "nothingless.launcher", "args": {} } },
+                    "dashboard": { "modifiers": ["SUPER"], "key": "D", "action": { "id": "nothingless.dashboard", "args": {} } },
+                    "assistant": { "modifiers": ["SUPER"], "key": "A", "action": { "id": "nothingless.assistant", "args": {} } },
+                    "clipboard": { "modifiers": ["SUPER"], "key": "V", "action": { "id": "nothingless.clipboard", "args": {} } },
+                    "emoji": { "modifiers": ["SUPER"], "key": "PERIOD", "action": { "id": "nothingless.emoji", "args": {} } },
+                    "notes": { "modifiers": ["SUPER"], "key": "N", "action": { "id": "nothingless.notes", "args": {} } },
+                    "tmux": { "modifiers": ["SUPER"], "key": "T", "action": { "id": "nothingless.tmux", "args": {} } },
+                    "wallpapers": { "modifiers": ["SUPER"], "key": "COMMA", "action": { "id": "nothingless.wallpapers", "args": {} } }
+                },
+                "system": {
+                    "config": { "modifiers": ["SUPER", "SHIFT"], "key": "C", "action": { "id": "nothingless.config", "args": {} } },
+                    "lockscreen": { "modifiers": ["SUPER"], "key": "L", "action": { "id": "nothingless.lock", "args": {} } },
+                    "overview": { "modifiers": ["SUPER"], "key": "TAB", "action": { "id": "nothingless.overview", "args": {} } },
+                    "powermenu": { "modifiers": ["SUPER"], "key": "ESCAPE", "action": { "id": "nothingless.powermenu", "args": {} } },
+                    "tools": { "modifiers": ["SUPER"], "key": "S", "action": { "id": "nothingless.tools", "args": {} } },
+                    "screenshot": { "modifiers": ["SUPER", "SHIFT"], "key": "S", "action": { "id": "nothingless.screenshot", "args": {} } },
+                    "screenrecord": { "modifiers": ["SUPER", "SHIFT"], "key": "R", "action": { "id": "nothingless.screenrecord", "args": {} } },
+                    "lens": { "modifiers": ["SUPER", "SHIFT"], "key": "A", "action": { "id": "nothingless.lens", "args": {} } },
+                    "reload": { "modifiers": ["SUPER", "ALT"], "key": "B", "action": { "id": "nothingless.reload", "args": {} } },
+                    "share-scan": { "modifiers": ["SUPER"], "key": "K", "action": { "id": "nothingless.share-scan", "args": {} } },
+                    "toggle-metrics": { "modifiers": ["SUPER", "SHIFT"], "key": "M", "action": { "id": "nothingless.toggle-metrics", "args": {} } },
+                    "toggle-gamemode": { "modifiers": ["SUPER", "SHIFT"], "key": "BACKSPACE", "action": { "id": "nothingless.toggle-gamemode", "args": {} } },
+                    "toggle-focusmode": { "modifiers": ["SUPER", "SHIFT"], "key": "F", "action": { "id": "nothingless.toggle-focusmode", "args": {} } },
+                    "cycle-profile": { "modifiers": ["SUPER", "SHIFT"], "key": "B", "action": { "id": "nothingless.cycle-profile", "args": {} } },
+                    "toggle-dnd": { "modifiers": ["SUPER", "SHIFT"], "key": "N", "action": { "id": "nothingless.toggle-dnd", "args": {} } },
+                    "toggle-caffeine": { "modifiers": ["SUPER"], "key": "PAUSE", "action": { "id": "nothingless.toggle-caffeine", "args": {} } },
+            "quit": { "modifiers": ["SUPER", "CTRL", "ALT"], "key": "B", "action": { "id": "nothingless.quit", "args": {} } }
+                }
+            }
+
+            function getNothinglessDefault(section, key) {
+                if (defaultNothinglessBinds[section] && defaultNothinglessBinds[section][key]) {
+                    const bind = defaultNothinglessBinds[section][key];
+                    return {
+                        "modifiers": bind.modifiers || [],
+                        "key": bind.key || "",
+                        "action": KeybindActions.ensureAction(bind.action)
+                    };
+                }
+                return null;
+            }
+
+            property list<var> custom: [
+                {
+                    "name": "Close Window",
+                    "keys": [
+                        {
+                            "modifiers": ["SUPER"],
+                            "key": "C"
+                        }
+                    ],
+                    "actions": [
+                        {
+                            "dispatcher": "killactive",
+                            "argument": "",
+                            "flags": "",
+                            "layouts": []
+                        }
+                    ],
+                    "enabled": true
+                },
+                {
+                    "name": "Workspace 1",
+                    "keys": [
+                        {
+                            "modifiers": ["SUPER"],
+                            "key": "1"
+                        }
+                    ],
+                    "actions": [
+                        {
+                            "dispatcher": "workspace",
+                            "argument": "1",
+                            "flags": "",
+                            "layouts": []
+                        }
+                    ],
+                    "enabled": true
+                },
+                {
+                    "name": "Workspace 2",
+                    "keys": [
+                        {
+                            "modifiers": ["SUPER"],
+                            "key": "2"
+                        }
+                    ],
+                    "actions": [
+                        {
+                            "dispatcher": "workspace",
+                            "argument": "2",
+                            "flags": "",
+                            "layouts": []
+                        }
+                    ],
+                    "enabled": true
+                },
+                {
+                    "name": "Workspace 3",
+                    "keys": [
+                        {
+                            "modifiers": ["SUPER"],
+                            "key": "3"
+                        }
+                    ],
+                    "actions": [
+                        {
+                            "dispatcher": "workspace",
+                            "argument": "3",
+                            "flags": "",
+                            "layouts": []
+                        }
+                    ],
+                    "enabled": true
+                },
+                {
+                    "name": "Workspace 4",
+                    "keys": [
+                        {
+                            "modifiers": ["SUPER"],
+                            "key": "4"
+                        }
+                    ],
+                    "actions": [
+                        {
+                            "dispatcher": "workspace",
+                            "argument": "4",
+                            "flags": "",
+                            "layouts": []
+                        }
+                    ],
+                    "enabled": true
+                },
+                {
+                    "name": "Workspace 5",
+                    "keys": [
+                        {
+                            "modifiers": ["SUPER"],
+                            "key": "5"
+                        }
+                    ],
+                    "actions": [
+                        {
+                            "dispatcher": "workspace",
+                            "argument": "5",
+                            "flags": "",
+                            "layouts": []
+                        }
+                    ],
+                    "enabled": true
+                },
+                {
+                    "name": "Workspace 6",
+                    "keys": [
+                        {
+                            "modifiers": ["SUPER"],
+                            "key": "6"
+                        }
+                    ],
+                    "actions": [
+                        {
+                            "dispatcher": "workspace",
+                            "argument": "6",
+                            "flags": "",
+                            "layouts": []
+                        }
+                    ],
+                    "enabled": true
+                },
+                {
+                    "name": "Workspace 7",
+                    "keys": [
+                        {
+                            "modifiers": ["SUPER"],
+                            "key": "7"
+                        }
+                    ],
+                    "actions": [
+                        {
+                            "dispatcher": "workspace",
+                            "argument": "7",
+                            "flags": "",
+                            "layouts": []
+                        }
+                    ],
+                    "enabled": true
+                },
+                {
+                    "name": "Workspace 8",
+                    "keys": [
+                        {
+                            "modifiers": ["SUPER"],
+                            "key": "8"
+                        }
+                    ],
+                    "actions": [
+                        {
+                            "dispatcher": "workspace",
+                            "argument": "8",
+                            "flags": "",
+                            "layouts": []
+                        }
+                    ],
+                    "enabled": true
+                },
+                {
+                    "name": "Workspace 9",
+                    "keys": [
+                        {
+                            "modifiers": ["SUPER"],
+                            "key": "9"
+                        }
+                    ],
+                    "actions": [
+                        {
+                            "dispatcher": "workspace",
+                            "argument": "9",
+                            "flags": "",
+                            "layouts": []
+                        }
+                    ],
+                    "enabled": true
+                },
+                {
+                    "name": "Workspace 10",
+                    "keys": [
+                        {
+                            "modifiers": ["SUPER"],
+                            "key": "0"
+                        }
+                    ],
+                    "actions": [
+                        {
+                            "dispatcher": "workspace",
+                            "argument": "10",
+                            "flags": "",
+                            "layouts": []
+                        }
+                    ],
+                    "enabled": true
+                },
+                {
+                    "name": "Move Window to Workspace 1",
+                    "keys": [
+                        {
+                            "modifiers": ["SUPER", "SHIFT"],
+                            "key": "1"
+                        }
+                    ],
+                    "actions": [
+                        {
+                            "dispatcher": "movetoworkspace",
+                            "argument": "1",
+                            "flags": "",
+                            "layouts": []
+                        }
+                    ],
+                    "enabled": true
+                },
+                {
+                    "name": "Move Window to Workspace 2",
+                    "keys": [
+                        {
+                            "modifiers": ["SUPER", "SHIFT"],
+                            "key": "2"
+                        }
+                    ],
+                    "actions": [
+                        {
+                            "dispatcher": "movetoworkspace",
+                            "argument": "2",
+                            "flags": "",
+                            "layouts": []
+                        }
+                    ],
+                    "enabled": true
+                },
+                {
+                    "name": "Move Window to Workspace 3",
+                    "keys": [
+                        {
+                            "modifiers": ["SUPER", "SHIFT"],
+                            "key": "3"
+                        }
+                    ],
+                    "actions": [
+                        {
+                            "dispatcher": "movetoworkspace",
+                            "argument": "3",
+                            "flags": "",
+                            "layouts": []
+                        }
+                    ],
+                    "enabled": true
+                },
+                {
+                    "name": "Move Window to Workspace 4",
+                    "keys": [
+                        {
+                            "modifiers": ["SUPER", "SHIFT"],
+                            "key": "4"
+                        }
+                    ],
+                    "actions": [
+                        {
+                            "dispatcher": "movetoworkspace",
+                            "argument": "4",
+                            "flags": "",
+                            "layouts": []
+                        }
+                    ],
+                    "enabled": true
+                },
+                {
+                    "name": "Move Window to Workspace 5",
+                    "keys": [
+                        {
+                            "modifiers": ["SUPER", "SHIFT"],
+                            "key": "5"
+                        }
+                    ],
+                    "actions": [
+                        {
+                            "dispatcher": "movetoworkspace",
+                            "argument": "5",
+                            "flags": "",
+                            "layouts": []
+                        }
+                    ],
+                    "enabled": true
+                },
+                {
+                    "name": "Move Window to Workspace 6",
+                    "keys": [
+                        {
+                            "modifiers": ["SUPER", "SHIFT"],
+                            "key": "6"
+                        }
+                    ],
+                    "actions": [
+                        {
+                            "dispatcher": "movetoworkspace",
+                            "argument": "6",
+                            "flags": "",
+                            "layouts": []
+                        }
+                    ],
+                    "enabled": true
+                },
+                {
+                    "name": "Move Window to Workspace 7",
+                    "keys": [
+                        {
+                            "modifiers": ["SUPER", "SHIFT"],
+                            "key": "7"
+                        }
+                    ],
+                    "actions": [
+                        {
+                            "dispatcher": "movetoworkspace",
+                            "argument": "7",
+                            "flags": "",
+                            "layouts": []
+                        }
+                    ],
+                    "enabled": true
+                },
+                {
+                    "name": "Move Window to Workspace 8",
+                    "keys": [
+                        {
+                            "modifiers": ["SUPER", "SHIFT"],
+                            "key": "8"
+                        }
+                    ],
+                    "actions": [
+                        {
+                            "dispatcher": "movetoworkspace",
+                            "argument": "8",
+                            "flags": "",
+                            "layouts": []
+                        }
+                    ],
+                    "enabled": true
+                },
+                {
+                    "name": "Move Window to Workspace 9",
+                    "keys": [
+                        {
+                            "modifiers": ["SUPER", "SHIFT"],
+                            "key": "9"
+                        }
+                    ],
+                    "actions": [
+                        {
+                            "dispatcher": "movetoworkspace",
+                            "argument": "9",
+                            "flags": "",
+                            "layouts": []
+                        }
+                    ],
+                    "enabled": true
+                },
+                {
+                    "name": "Move Window to Workspace 10",
+                    "keys": [
+                        {
+                            "modifiers": ["SUPER", "SHIFT"],
+                            "key": "0"
+                        }
+                    ],
+                    "actions": [
+                        {
+                            "dispatcher": "movetoworkspace",
+                            "argument": "10",
+                            "flags": "",
+                            "layouts": []
+                        }
+                    ],
+                    "enabled": true
+                },
+                {
+                    "name": "Move Window Silently to Workspace 1",
+                    "keys": [
+                        {
+                            "modifiers": ["SUPER", "ALT"],
+                            "key": "1"
+                        }
+                    ],
+                    "actions": [
+                        {
+                            "dispatcher": "movetoworkspacesilent",
+                            "argument": "1",
+                            "flags": "",
+                            "layouts": []
+                        }
+                    ],
+                    "enabled": true
+                },
+                {
+                    "name": "Move Window Silently to Workspace 2",
+                    "keys": [
+                        {
+                            "modifiers": ["SUPER", "ALT"],
+                            "key": "2"
+                        }
+                    ],
+                    "actions": [
+                        {
+                            "dispatcher": "movetoworkspacesilent",
+                            "argument": "2",
+                            "flags": "",
+                            "layouts": []
+                        }
+                    ],
+                    "enabled": true
+                },
+                {
+                    "name": "Move Window Silently to Workspace 3",
+                    "keys": [
+                        {
+                            "modifiers": ["SUPER", "ALT"],
+                            "key": "3"
+                        }
+                    ],
+                    "actions": [
+                        {
+                            "dispatcher": "movetoworkspacesilent",
+                            "argument": "3",
+                            "flags": "",
+                            "layouts": []
+                        }
+                    ],
+                    "enabled": true
+                },
+                {
+                    "name": "Move Window Silently to Workspace 4",
+                    "keys": [
+                        {
+                            "modifiers": ["SUPER", "ALT"],
+                            "key": "4"
+                        }
+                    ],
+                    "actions": [
+                        {
+                            "dispatcher": "movetoworkspacesilent",
+                            "argument": "4",
+                            "flags": "",
+                            "layouts": []
+                        }
+                    ],
+                    "enabled": true
+                },
+                {
+                    "name": "Move Window Silently to Workspace 5",
+                    "keys": [
+                        {
+                            "modifiers": ["SUPER", "ALT"],
+                            "key": "5"
+                        }
+                    ],
+                    "actions": [
+                        {
+                            "dispatcher": "movetoworkspacesilent",
+                            "argument": "5",
+                            "flags": "",
+                            "layouts": []
+                        }
+                    ],
+                    "enabled": true
+                },
+                {
+                    "name": "Move Window Silently to Workspace 6",
+                    "keys": [
+                        {
+                            "modifiers": ["SUPER", "ALT"],
+                            "key": "6"
+                        }
+                    ],
+                    "actions": [
+                        {
+                            "dispatcher": "movetoworkspacesilent",
+                            "argument": "6",
+                            "flags": "",
+                            "layouts": []
+                        }
+                    ],
+                    "enabled": true
+                },
+                {
+                    "name": "Move Window Silently to Workspace 7",
+                    "keys": [
+                        {
+                            "modifiers": ["SUPER", "ALT"],
+                            "key": "7"
+                        }
+                    ],
+                    "actions": [
+                        {
+                            "dispatcher": "movetoworkspacesilent",
+                            "argument": "7",
+                            "flags": "",
+                            "layouts": []
+                        }
+                    ],
+                    "enabled": true
+                },
+                {
+                    "name": "Move Window Silently to Workspace 8",
+                    "keys": [
+                        {
+                            "modifiers": ["SUPER", "ALT"],
+                            "key": "8"
+                        }
+                    ],
+                    "actions": [
+                        {
+                            "dispatcher": "movetoworkspacesilent",
+                            "argument": "8",
+                            "flags": "",
+                            "layouts": []
+                        }
+                    ],
+                    "enabled": true
+                },
+                {
+                    "name": "Move Window Silently to Workspace 9",
+                    "keys": [
+                        {
+                            "modifiers": ["SUPER", "ALT"],
+                            "key": "9"
+                        }
+                    ],
+                    "actions": [
+                        {
+                            "dispatcher": "movetoworkspacesilent",
+                            "argument": "9",
+                            "flags": "",
+                            "layouts": []
+                        }
+                    ],
+                    "enabled": true
+                },
+                {
+                    "name": "Move Window Silently to Workspace 10",
+                    "keys": [
+                        {
+                            "modifiers": ["SUPER", "ALT"],
+                            "key": "0"
+                        }
+                    ],
+                    "actions": [
+                        {
+                            "dispatcher": "movetoworkspacesilent",
+                            "argument": "10",
+                            "flags": "",
+                            "layouts": []
+                        }
+                    ],
+                    "enabled": true
+                },
+                {
+                    "name": "Switch Occupied Workspace -1",
+                    "keys": [
+                        {
+                            "modifiers": ["SUPER"],
+                            "key": "mouse_down"
+                        }
+                    ],
+                    "actions": [
+                        {
+                            "dispatcher": "workspace",
+                            "argument": "e-1",
+                            "flags": "",
+                            "layouts": []
+                        }
+                    ],
+                    "enabled": true
+                },
+                {
+                    "name": "Switch Occupied Workspace +1",
+                    "keys": [
+                        {
+                            "modifiers": ["SUPER"],
+                            "key": "mouse_up"
+                        }
+                    ],
+                    "actions": [
+                        {
+                            "dispatcher": "workspace",
+                            "argument": "e+1",
+                            "flags": "",
+                            "layouts": []
+                        }
+                    ],
+                    "enabled": true
+                },
+                {
+                    "name": "Switch Occupied Workspace -1",
+                    "keys": [
+                        {
+                            "modifiers": ["SUPER", "SHIFT"],
+                            "key": "Z"
+                        }
+                    ],
+                    "actions": [
+                        {
+                            "dispatcher": "workspace",
+                            "argument": "e-1",
+                            "flags": "",
+                            "layouts": []
+                        }
+                    ],
+                    "enabled": true
+                },
+                {
+                    "name": "Switch Occupied Workspace +1",
+                    "keys": [
+                        {
+                            "modifiers": ["SUPER", "SHIFT"],
+                            "key": "X"
+                        }
+                    ],
+                    "actions": [
+                        {
+                            "dispatcher": "workspace",
+                            "argument": "e+1",
+                            "flags": "",
+                            "layouts": []
+                        }
+                    ],
+                    "enabled": true
+                },
+                {
+                    "name": "Switch Relative Workspace -1",
+                    "keys": [
+                        {
+                            "modifiers": ["SUPER"],
+                            "key": "Z"
+                        }
+                    ],
+                    "actions": [
+                        {
+                            "dispatcher": "workspace",
+                            "argument": "-1",
+                            "flags": "",
+                            "layouts": []
+                        }
+                    ],
+                    "enabled": true
+                },
+                {
+                    "name": "Switch Relative Workspace +1",
+                    "keys": [
+                        {
+                            "modifiers": ["SUPER"],
+                            "key": "X"
+                        }
+                    ],
+                    "actions": [
+                        {
+                            "dispatcher": "workspace",
+                            "argument": "+1",
+                            "flags": "",
+                            "layouts": []
+                        }
+                    ],
+                    "enabled": true
+                },
+                {
+                    "name": "Switch Workspace Left (CTRL+SUPER+Left)",
+                    "keys": [
+                        {
+                            "modifiers": ["CTRL", "SUPER"],
+                            "key": "left"
+                        }
+                    ],
+                    "actions": [
+                        {
+                            "dispatcher": "workspace",
+                            "argument": "-1",
+                            "flags": "",
+                            "layouts": []
+                        }
+                    ],
+                    "enabled": true
+                },
+                {
+                    "name": "Switch Workspace Right (CTRL+SUPER+Right)",
+                    "keys": [
+                        {
+                            "modifiers": ["CTRL", "SUPER"],
+                            "key": "right"
+                        }
+                    ],
+                    "actions": [
+                        {
+                            "dispatcher": "workspace",
+                            "argument": "+1",
+                            "flags": "",
+                            "layouts": []
+                        }
+                    ],
+                    "enabled": true
+                },
+                {
+                    "name": "Move Window to Prev Workspace (SHIFT+CTRL+SUPER+Left)",
+                    "keys": [
+                        {
+                            "modifiers": ["SHIFT", "CTRL", "SUPER"],
+                            "key": "left"
+                        }
+                    ],
+                    "actions": [
+                        {
+                            "dispatcher": "movetoworkspace",
+                            "argument": "-1",
+                            "flags": "",
+                            "layouts": []
+                        }
+                    ],
+                    "enabled": true
+                },
+                {
+                    "name": "Move Window to Next Workspace (SHIFT+CTRL+SUPER+Right)",
+                    "keys": [
+                        {
+                            "modifiers": ["SHIFT", "CTRL", "SUPER"],
+                            "key": "right"
+                        }
+                    ],
+                    "actions": [
+                        {
+                            "dispatcher": "movetoworkspace",
+                            "argument": "+1",
+                            "flags": "",
+                            "layouts": []
+                        }
+                    ],
+                    "enabled": true
+                },
+                {
+                    "name": "Drag Window",
+                    "keys": [
+                        {
+                            "modifiers": ["SUPER"],
+                            "key": "mouse:272"
+                        }
+                    ],
+                    "actions": [
+                        {
+                            "dispatcher": "movewindow",
+                            "argument": "",
+                            "flags": "m",
+                            "layouts": []
+                        }
+                    ],
+                    "enabled": true
+                },
+                {
+                    "name": "Resize Window with Mouse",
+                    "keys": [
+                        {
+                            "modifiers": ["SUPER"],
+                            "key": "mouse:273"
+                        }
+                    ],
+                    "actions": [
+                        {
+                            "dispatcher": "resizewindow",
+                            "argument": "",
+                            "flags": "m",
+                            "layouts": []
+                        }
+                    ],
+                    "enabled": true
+                },
+                {
+                    "name": "Media Play Pause",
+                    "keys": [
+                        {
+                            "modifiers": [],
+                            "key": "XF86AudioPlay"
+                        }
+                    ],
+                    "actions": [
+                        {
+                            "dispatcher": "exec",
+                            "argument": "playerctl play-pause",
+                            "flags": "",
+                            "layouts": []
+                        }
+                    ],
+                    "enabled": true
+                },
+                {
+                    "name": "Media Previous",
+                    "keys": [
+                        {
+                            "modifiers": [],
+                            "key": "XF86AudioPrev"
+                        }
+                    ],
+                    "actions": [
+                        {
+                            "dispatcher": "exec",
+                            "argument": "playerctl previous",
+                            "flags": "",
+                            "layouts": []
+                        }
+                    ],
+                    "enabled": true
+                },
+                {
+                    "name": "Media Next",
+                    "keys": [
+                        {
+                            "modifiers": [],
+                            "key": "XF86AudioNext"
+                        }
+                    ],
+                    "actions": [
+                        {
+                            "dispatcher": "exec",
+                            "argument": "playerctl next",
+                            "flags": "",
+                            "layouts": []
+                        }
+                    ],
+                    "enabled": true
+                },
+                {
+                    "name": "Media Play Pause",
+                    "keys": [
+                        {
+                            "modifiers": [],
+                            "key": "XF86AudioMedia"
+                        }
+                    ],
+                    "actions": [
+                        {
+                            "dispatcher": "exec",
+                            "argument": "playerctl play-pause",
+                            "flags": "l",
+                            "layouts": []
+                        }
+                    ],
+                    "enabled": true
+                },
+                {
+                    "name": "Media Stop",
+                    "keys": [
+                        {
+                            "modifiers": [],
+                            "key": "XF86AudioStop"
+                        }
+                    ],
+                    "actions": [
+                        {
+                            "dispatcher": "exec",
+                            "argument": "playerctl stop",
+                            "flags": "l",
+                            "layouts": []
+                        }
+                    ],
+                    "enabled": true
+                },
+                {
+                    "name": "Volume Up",
+                    "keys": [
+                        {
+                            "modifiers": [],
+                            "key": "XF86AudioRaiseVolume"
+                        }
+                    ],
+                    "actions": [
+                        {
+                            "dispatcher": "exec",
+                            "argument": "wpctl set-volume -l 1 @DEFAULT_AUDIO_SINK@ 10%+",
+                            "flags": "le",
+                            "layouts": []
+                        }
+                    ],
+                    "enabled": true
+                },
+                {
+                    "name": "Volume Down",
+                    "keys": [
+                        {
+                            "modifiers": [],
+                            "key": "XF86AudioLowerVolume"
+                        }
+                    ],
+                    "actions": [
+                        {
+                            "dispatcher": "exec",
+                            "argument": "wpctl set-volume -l 1 @DEFAULT_AUDIO_SINK@ 10%-",
+                            "flags": "le",
+                            "layouts": []
+                        }
+                    ],
+                    "enabled": true
+                },
+                {
+                    "name": "Mute Audio",
+                    "keys": [
+                        {
+                            "modifiers": [],
+                            "key": "XF86AudioMute"
+                        }
+                    ],
+                    "actions": [
+                        {
+                            "dispatcher": "exec",
+                            "argument": "wpctl set-mute @DEFAULT_AUDIO_SINK@ toggle",
+                            "flags": "le",
+                            "layouts": []
+                        }
+                    ],
+                    "enabled": true
+                },
+                {
+                    "name": "Brightness Up",
+                    "keys": [
+                        {
+                            "modifiers": [],
+                            "key": "XF86MonBrightnessUp"
+                        }
+                    ],
+                    "actions": [
+                        {
+                            "dispatcher": "exec",
+                            "argument": "nothingless brightness +5",
+                            "flags": "le",
+                            "layouts": []
+                        }
+                    ],
+                    "enabled": true
+                },
+                {
+                    "name": "Brightness Down",
+                    "keys": [
+                        {
+                            "modifiers": [],
+                            "key": "XF86MonBrightnessDown"
+                        }
+                    ],
+                    "actions": [
+                        {
+                            "dispatcher": "exec",
+                            "argument": "nothingless brightness -5",
+                            "flags": "le",
+                            "layouts": []
+                        }
+                    ],
+                    "enabled": true
+                },
+                {
+                    "name": "Calculator",
+                    "keys": [
+                        {
+                            "modifiers": [],
+                            "key": "XF86Calculator"
+                        }
+                    ],
+                    "actions": [
+                        {
+                            "dispatcher": "exec",
+                            "argument": "notify-send \"Soon\"",
+                            "flags": "",
+                            "layouts": []
+                        }
+                    ],
+                    "enabled": true
+                },
+                {
+                    "name": "Toggle Special Workspace",
+                    "keys": [
+                        {
+                            "modifiers": ["SUPER", "SHIFT"],
+                            "key": "V"
+                        }
+                    ],
+                    "actions": [
+                        {
+                            "dispatcher": "togglespecialworkspace",
+                            "argument": "",
+                            "flags": "",
+                            "layouts": []
+                        }
+                    ],
+                    "enabled": true
+                },
+                {
+                    "name": "Move Window to Special Workspace",
+                    "keys": [
+                        {
+                            "modifiers": ["SUPER", "ALT"],
+                            "key": "V"
+                        }
+                    ],
+                    "actions": [
+                        {
+                            "dispatcher": "movetoworkspace",
+                            "argument": "special",
+                            "flags": "",
+                            "layouts": []
+                        }
+                    ],
+                    "enabled": true
+                },
+                {
+                    "name": "Lock Session on Lid Switch",
+                    "keys": [
+                        {
+                            "modifiers": [],
+                            "key": "switch:Lid Switch"
+                        }
+                    ],
+                    "actions": [
+                        {
+                            "dispatcher": "exec",
+                            "argument": "loginctl lock-session",
+                            "flags": "l",
+                            "layouts": []
+                        }
+                    ],
+                    "enabled": true
+                },
+                {
+                    "name": "Display Off on Lid Close",
+                    "keys": [
+                        {
+                            "modifiers": [],
+                            "key": "switch:on:Lid Switch"
+                        }
+                    ],
+                    "actions": [
+                        {
+                            "dispatcher": "exec",
+                            "argument": "axctl monitor set-dpms 0 0",
+                            "flags": "l",
+                            "layouts": []
+                        }
+                    ],
+                    "enabled": true
+                },
+                {
+                    "name": "Display On on Lid Open",
+                    "keys": [
+                        {
+                            "modifiers": [],
+                            "key": "switch:off:Lid Switch"
+                        }
+                    ],
+                    "actions": [
+                        {
+                            "dispatcher": "exec",
+                            "argument": "axctl monitor set-dpms 0 1",
+                            "flags": "l",
+                            "layouts": []
+                        }
+                    ],
+                    "enabled": true
+                },
+                {
+                    "name": "Focus Up",
+                    "keys": [
+                        {
+                            "modifiers": ["SUPER"],
+                            "key": "Up"
+                        }
+                    ],
+                    "actions": [
+                        {
+                            "dispatcher": "movefocus",
+                            "argument": "u",
+                            "flags": "",
+                            "layouts": []
+                        }
+                    ],
+                    "enabled": true
+                },
+                {
+                    "name": "Focus Up",
+                    "keys": [
+                        {
+                            "modifiers": ["SUPER", "CTRL"],
+                            "key": "k"
+                        }
+                    ],
+                    "actions": [
+                        {
+                            "dispatcher": "movefocus",
+                            "argument": "u",
+                            "flags": "",
+                            "layouts": []
+                        }
+                    ],
+                    "enabled": true
+                },
+                {
+                    "name": "Focus Down",
+                    "keys": [
+                        {
+                            "modifiers": ["SUPER"],
+                            "key": "Down"
+                        }
+                    ],
+                    "actions": [
+                        {
+                            "dispatcher": "movefocus",
+                            "argument": "d",
+                            "flags": "",
+                            "layouts": []
+                        }
+                    ],
+                    "enabled": true
+                },
+                {
+                    "name": "Focus Down",
+                    "keys": [
+                        {
+                            "modifiers": ["SUPER", "CTRL"],
+                            "key": "j"
+                        }
+                    ],
+                    "actions": [
+                        {
+                            "dispatcher": "movefocus",
+                            "argument": "d",
+                            "flags": "",
+                            "layouts": []
+                        }
+                    ],
+                    "enabled": true
+                },
+                {
+                    "name": "Focus Left",
+                    "keys": [
+                        {
+                            "modifiers": ["SUPER"],
+                            "key": "Left"
+                        }
+                    ],
+                    "actions": [
+                        {
+                            "dispatcher": "movefocus",
+                            "argument": "l",
+                            "flags": "",
+                            "layouts": []
+                        }
+                    ],
+                    "enabled": true
+                },
+                {
+                    "name": "Focus Left",
+                    "keys": [
+                        {
+                            "modifiers": ["SUPER", "CTRL"],
+                            "key": "z"
+                        }
+                    ],
+                    "actions": [
+                        {
+                            "dispatcher": "movefocus",
+                            "argument": "l",
+                            "flags": "",
+                            "layouts": []
+                        }
+                    ],
+                    "enabled": true
+                },
+                {
+                    "name": "Focus Left",
+                    "keys": [
+                        {
+                            "modifiers": ["SUPER", "CTRL"],
+                            "key": "h"
+                        }
+                    ],
+                    "actions": [
+                        {
+                            "dispatcher": "movefocus",
+                            "argument": "l",
+                            "flags": "",
+                            "layouts": []
+                        }
+                    ],
+                    "enabled": true
+                },
+                {
+                    "name": "Focus Right",
+                    "keys": [
+                        {
+                            "modifiers": ["SUPER"],
+                            "key": "Right"
+                        }
+                    ],
+                    "actions": [
+                        {
+                            "dispatcher": "movefocus",
+                            "argument": "r",
+                            "flags": "",
+                            "layouts": []
+                        }
+                    ],
+                    "enabled": true
+                },
+                {
+                    "name": "Focus Right",
+                    "keys": [
+                        {
+                            "modifiers": ["SUPER", "CTRL"],
+                            "key": "x"
+                        }
+                    ],
+                    "actions": [
+                        {
+                            "dispatcher": "movefocus",
+                            "argument": "r",
+                            "flags": "",
+                            "layouts": []
+                        }
+                    ],
+                    "enabled": true
+                },
+                {
+                    "name": "Focus Right",
+                    "keys": [
+                        {
+                            "modifiers": ["SUPER", "CTRL"],
+                            "key": "l"
+                        }
+                    ],
+                    "actions": [
+                        {
+                            "dispatcher": "movefocus",
+                            "argument": "r",
+                            "flags": "",
+                            "layouts": []
+                        }
+                    ],
+                    "enabled": true
+                },
+                {
+                    "name": "Move Window Left",
+                    "keys": [
+                        {
+                            "modifiers": ["SUPER", "SHIFT"],
+                            "key": "Left"
+                        }
+                    ],
+                    "actions": [
+                        {
+                            "dispatcher": "movewindow",
+                            "argument": "l",
+                            "flags": "",
+                            "layouts": []
+                        }
+                    ],
+                    "enabled": true
+                },
+                {
+                    "name": "Move Window Left",
+                    "keys": [
+                        {
+                            "modifiers": ["SUPER", "SHIFT"],
+                            "key": "h"
+                        }
+                    ],
+                    "actions": [
+                        {
+                            "dispatcher": "movewindow",
+                            "argument": "l",
+                            "flags": "",
+                            "layouts": []
+                        }
+                    ],
+                    "enabled": true
+                },
+                {
+                    "name": "Move Window Right",
+                    "keys": [
+                        {
+                            "modifiers": ["SUPER", "SHIFT"],
+                            "key": "Right"
+                        }
+                    ],
+                    "actions": [
+                        {
+                            "dispatcher": "movewindow",
+                            "argument": "r",
+                            "flags": "",
+                            "layouts": []
+                        }
+                    ],
+                    "enabled": true
+                },
+                {
+                    "name": "Move Window Right",
+                    "keys": [
+                        {
+                            "modifiers": ["SUPER", "SHIFT"],
+                            "key": "l"
+                        }
+                    ],
+                    "actions": [
+                        {
+                            "dispatcher": "movewindow",
+                            "argument": "r",
+                            "flags": "",
+                            "layouts": []
+                        }
+                    ],
+                    "enabled": true
+                },
+                {
+                    "name": "Move Window Up",
+                    "keys": [
+                        {
+                            "modifiers": ["SUPER", "SHIFT"],
+                            "key": "Up"
+                        }
+                    ],
+                    "actions": [
+                        {
+                            "dispatcher": "movewindow",
+                            "argument": "u",
+                            "flags": "",
+                            "layouts": []
+                        }
+                    ],
+                    "enabled": true
+                },
+                {
+                    "name": "Move Window Up",
+                    "keys": [
+                        {
+                            "modifiers": ["SUPER", "SHIFT"],
+                            "key": "k"
+                        }
+                    ],
+                    "actions": [
+                        {
+                            "dispatcher": "movewindow",
+                            "argument": "u",
+                            "flags": "",
+                            "layouts": []
+                        }
+                    ],
+                    "enabled": true
+                },
+                {
+                    "name": "Move Window Down",
+                    "keys": [
+                        {
+                            "modifiers": ["SUPER", "SHIFT"],
+                            "key": "Down"
+                        }
+                    ],
+                    "actions": [
+                        {
+                            "dispatcher": "movewindow",
+                            "argument": "d",
+                            "flags": "",
+                            "layouts": []
+                        }
+                    ],
+                    "enabled": true
+                },
+                {
+                    "name": "Move Window Down",
+                    "keys": [
+                        {
+                            "modifiers": ["SUPER", "SHIFT"],
+                            "key": "j"
+                        }
+                    ],
+                    "actions": [
+                        {
+                            "dispatcher": "movewindow",
+                            "argument": "d",
+                            "flags": "",
+                            "layouts": []
+                        }
+                    ],
+                    "enabled": true
+                },
+                {
+                    "name": "Resize Column +0.1",
+                    "keys": [
+                        {
+                            "modifiers": ["SUPER", "ALT"],
+                            "key": "Right"
+                        }
+                    ],
+                    "actions": [
+                        {
+                            "dispatcher": "layoutmsg",
+                            "argument": "colresize +0.1",
+                            "flags": "",
+                            "layouts": []
+                        }
+                    ],
+                    "enabled": true
+                },
+                {
+                    "name": "Resize Column +0.1",
+                    "keys": [
+                        {
+                            "modifiers": ["SUPER", "ALT"],
+                            "key": "l"
+                        }
+                    ],
+                    "actions": [
+                        {
+                            "dispatcher": "layoutmsg",
+                            "argument": "colresize +0.1",
+                            "flags": "",
+                            "layouts": []
+                        }
+                    ],
+                    "enabled": true
+                },
+                {
+                    "name": "Resize Column -0.1",
+                    "keys": [
+                        {
+                            "modifiers": ["SUPER", "ALT"],
+                            "key": "Left"
+                        }
+                    ],
+                    "actions": [
+                        {
+                            "dispatcher": "layoutmsg",
+                            "argument": "colresize -0.1",
+                            "flags": "",
+                            "layouts": []
+                        }
+                    ],
+                    "enabled": true
+                },
+                {
+                    "name": "Resize Column -0.1",
+                    "keys": [
+                        {
+                            "modifiers": ["SUPER", "ALT"],
+                            "key": "h"
+                        }
+                    ],
+                    "actions": [
+                        {
+                            "dispatcher": "layoutmsg",
+                            "argument": "colresize -0.1",
+                            "flags": "",
+                            "layouts": []
+                        }
+                    ],
+                    "enabled": true
+                },
+                {
+                    "name": "Resize Active 0 50",
+                    "keys": [
+                        {
+                            "modifiers": ["SUPER", "ALT"],
+                            "key": "Down"
+                        }
+                    ],
+                    "actions": [
+                        {
+                            "dispatcher": "resizeactive",
+                            "argument": "0 50",
+                            "flags": "",
+                            "layouts": []
+                        }
+                    ],
+                    "enabled": true
+                },
+                {
+                    "name": "Resize Active 0 50",
+                    "keys": [
+                        {
+                            "modifiers": ["SUPER", "ALT"],
+                            "key": "j"
+                        }
+                    ],
+                    "actions": [
+                        {
+                            "dispatcher": "resizeactive",
+                            "argument": "0 50",
+                            "flags": "",
+                            "layouts": []
+                        }
+                    ],
+                    "enabled": true
+                },
+                {
+                    "name": "Resize Active 0 -50",
+                    "keys": [
+                        {
+                            "modifiers": ["SUPER", "ALT"],
+                            "key": "Up"
+                        }
+                    ],
+                    "actions": [
+                        {
+                            "dispatcher": "resizeactive",
+                            "argument": "0 -50",
+                            "flags": "",
+                            "layouts": []
+                        }
+                    ],
+                    "enabled": true
+                },
+                {
+                    "name": "Resize Active 0 -50",
+                    "keys": [
+                        {
+                            "modifiers": ["SUPER", "ALT"],
+                            "key": "k"
+                        }
+                    ],
+                    "actions": [
+                        {
+                            "dispatcher": "resizeactive",
+                            "argument": "0 -50",
+                            "flags": "",
+                            "layouts": []
+                        }
+                    ],
+                    "enabled": true
+                },
+                {
+                    "name": "Promote Column",
+                    "keys": [
+                        {
+                            "modifiers": ["SUPER", "ALT"],
+                            "key": "SPACE"
+                        }
+                    ],
+                    "actions": [
+                        {
+                            "dispatcher": "layoutmsg",
+                            "argument": "promote",
+                            "flags": "",
+                            "layouts": []
+                        }
+                    ],
+                    "enabled": true
+                },
+                {
+                    "name": "Toggle Fit",
+                    "keys": [
+                        {
+                            "modifiers": ["SUPER", "CTRL"],
+                            "key": "SPACE"
+                        }
+                    ],
+                    "actions": [
+                        {
+                            "dispatcher": "layoutmsg",
+                            "argument": "togglefit",
+                            "flags": "",
+                            "layouts": []
+                        }
+                    ],
+                    "enabled": true
+                },
+                {
+                    "name": "Resize Column +conf",
+                    "keys": [
+                        {
+                            "modifiers": ["SUPER", "SHIFT"],
+                            "key": "SPACE"
+                        }
+                    ],
+                    "actions": [
+                        {
+                            "dispatcher": "layoutmsg",
+                            "argument": "colresize +conf",
+                            "flags": "",
+                            "layouts": []
+                        }
+                    ],
+                    "enabled": true
+                },
+                {
+                    "name": "Swap Column Left",
+                    "keys": [
+                        {
+                            "modifiers": ["SUPER", "ALT", "CTRL"],
+                            "key": "Left"
+                        }
+                    ],
+                    "actions": [
+                        {
+                            "dispatcher": "layoutmsg",
+                            "argument": "swapcol l",
+                            "flags": "",
+                            "layouts": []
+                        }
+                    ],
+                    "enabled": true
+                },
+                {
+                    "name": "Swap Column Left",
+                    "keys": [
+                        {
+                            "modifiers": ["SUPER", "ALT", "CTRL"],
+                            "key": "h"
+                        }
+                    ],
+                    "actions": [
+                        {
+                            "dispatcher": "layoutmsg",
+                            "argument": "swapcol l",
+                            "flags": "",
+                            "layouts": []
+                        }
+                    ],
+                    "enabled": true
+                },
+                {
+                    "name": "Swap Column Right",
+                    "keys": [
+                        {
+                            "modifiers": ["SUPER", "ALT", "CTRL"],
+                            "key": "Right"
+                        }
+                    ],
+                    "actions": [
+                        {
+                            "dispatcher": "layoutmsg",
+                            "argument": "swapcol r",
+                            "flags": "",
+                            "layouts": []
+                        }
+                    ],
+                    "enabled": true
+                },
+                {
+                    "name": "Swap Column Right",
+                    "keys": [
+                        {
+                            "modifiers": ["SUPER", "ALT", "CTRL"],
+                            "key": "l"
+                        }
+                    ],
+                    "actions": [
+                        {
+                            "dispatcher": "layoutmsg",
+                            "argument": "swapcol r",
+                            "flags": "",
+                            "layouts": []
+                        }
+                    ],
+                    "enabled": true
+                },
+                {
+                    "name": "Move Column to Workspace 1",
+                    "keys": [
+                        {
+                            "modifiers": ["SUPER", "CTRL", "ALT"],
+                            "key": "1"
+                        }
+                    ],
+                    "actions": [
+                        {
+                            "dispatcher": "layoutmsg",
+                            "argument": "movecoltoworkspace 1",
+                            "flags": "",
+                            "layouts": []
+                        }
+                    ],
+                    "enabled": true
+                },
+                {
+                    "name": "Move Column to Workspace 2",
+                    "keys": [
+                        {
+                            "modifiers": ["SUPER", "CTRL", "ALT"],
+                            "key": "2"
+                        }
+                    ],
+                    "actions": [
+                        {
+                            "dispatcher": "layoutmsg",
+                            "argument": "movecoltoworkspace 2",
+                            "flags": "",
+                            "layouts": []
+                        }
+                    ],
+                    "enabled": true
+                },
+                {
+                    "name": "Move Column to Workspace 3",
+                    "keys": [
+                        {
+                            "modifiers": ["SUPER", "CTRL", "ALT"],
+                            "key": "3"
+                        }
+                    ],
+                    "actions": [
+                        {
+                            "dispatcher": "layoutmsg",
+                            "argument": "movecoltoworkspace 3",
+                            "flags": "",
+                            "layouts": []
+                        }
+                    ],
+                    "enabled": true
+                },
+                {
+                    "name": "Move Column to Workspace 4",
+                    "keys": [
+                        {
+                            "modifiers": ["SUPER", "CTRL", "ALT"],
+                            "key": "4"
+                        }
+                    ],
+                    "actions": [
+                        {
+                            "dispatcher": "layoutmsg",
+                            "argument": "movecoltoworkspace 4",
+                            "flags": "",
+                            "layouts": []
+                        }
+                    ],
+                    "enabled": true
+                },
+                {
+                    "name": "Move Column to Workspace 5",
+                    "keys": [
+                        {
+                            "modifiers": ["SUPER", "CTRL", "ALT"],
+                            "key": "5"
+                        }
+                    ],
+                    "actions": [
+                        {
+                            "dispatcher": "layoutmsg",
+                            "argument": "movecoltoworkspace 5",
+                            "flags": "",
+                            "layouts": []
+                        }
+                    ],
+                    "enabled": true
+                },
+                {
+                    "name": "Move Column to Workspace 6",
+                    "keys": [
+                        {
+                            "modifiers": ["SUPER", "CTRL", "ALT"],
+                            "key": "6"
+                        }
+                    ],
+                    "actions": [
+                        {
+                            "dispatcher": "layoutmsg",
+                            "argument": "movecoltoworkspace 6",
+                            "flags": "",
+                            "layouts": []
+                        }
+                    ],
+                    "enabled": true
+                },
+                {
+                    "name": "Move Column to Workspace 7",
+                    "keys": [
+                        {
+                            "modifiers": ["SUPER", "CTRL", "ALT"],
+                            "key": "7"
+                        }
+                    ],
+                    "actions": [
+                        {
+                            "dispatcher": "layoutmsg",
+                            "argument": "movecoltoworkspace 7",
+                            "flags": "",
+                            "layouts": []
+                        }
+                    ],
+                    "enabled": true
+                },
+                {
+                    "name": "Move Column to Workspace 8",
+                    "keys": [
+                        {
+                            "modifiers": ["SUPER", "CTRL", "ALT"],
+                            "key": "8"
+                        }
+                    ],
+                    "actions": [
+                        {
+                            "dispatcher": "layoutmsg",
+                            "argument": "movecoltoworkspace 8",
+                            "flags": "",
+                            "layouts": []
+                        }
+                    ],
+                    "enabled": true
+                },
+                {
+                    "name": "Move Column to Workspace 9",
+                    "keys": [
+                        {
+                            "modifiers": ["SUPER", "CTRL", "ALT"],
+                            "key": "9"
+                        }
+                    ],
+                    "actions": [
+                        {
+                            "dispatcher": "layoutmsg",
+                            "argument": "movecoltoworkspace 9",
+                            "flags": "",
+                            "layouts": []
+                        }
+                    ],
+                    "enabled": true
+                },
+                {
+                    "name": "Move Column to Workspace 10",
+                    "keys": [
+                        {
+                            "modifiers": ["SUPER", "CTRL", "ALT"],
+                            "key": "0"
+                        }
+                    ],
+                    "actions": [
+                        {
+                            "dispatcher": "layoutmsg",
+                            "argument": "movecoltoworkspace 10",
+                            "flags": "",
+                            "layouts": []
+                        }
+                    ],
+                    "enabled": true
+                }
+            ]
+        }
+    }
+
+    // Validation helper
+    function validateModule(name, loader, defaults, onComplete) {
+        var raw = loader.text();
+        if (!raw || raw.trim().length === 0) {
+            // File is missing or empty — create with defaults
+            console.log(name + ".json missing or empty, creating default...");
+            loader.setText(JSON.stringify(defaults, null, 2));
+            onComplete();
+            return;
+        }
+
+        try {
+            var current = JSON.parse(raw);
+            var validated = ConfigValidator.validate(current, defaults);
+
+            if (JSON.stringify(current) !== JSON.stringify(validated)) {
+                console.log("Merging and updating " + name + ".json...");
+                loader.setText(JSON.stringify(validated, null, 2));
+            }
+            onComplete();
+        } catch (e) {
+            console.log("Error validating " + name + " config (invalid JSON?): " + e);
+            console.log("Overwriting with defaults due to error.");
+            loader.setText(JSON.stringify(defaults, null, 2));
+            onComplete();
+        }
+    }
+
+    // Handle missing config files - copy from preset or create with defaults
+    function handleMissingConfig(name, loader, defaults, onComplete) {
+        var presetPath = root.presetDir + "/" + name + ".json";
+        var targetPath = root.configDir + "/" + name + ".json";
+        console.log(name + ".json not found, checking preset: " + presetPath);
+
+        // Create a Process component dynamically to copy the file
+        var copyProcess = Qt.createQmlObject(
+            "import QtQuick 2.0; Process { running: true; command: ['cp', '" + presetPath + "', '" + targetPath + "']; onFinished: { console.log('Copy finished for " + name + "'); } }",
+            root,
+            "copyProcess"
+        );
+
+        // Reload the loader to pick up the copied file
+        loader.reload();
+
+        // If still not ready after reload, use defaults as fallback
+        Qt.callLater(() => {
+            if (!root[name + "Ready"]) {
+                console.log("Using defaults for " + name + ".json");
+                loader.setText(JSON.stringify(defaults, null, 2));
+            }
+            onComplete();
+        });
+    }
+
+
+    // Exposed properties
+    // Theme configuration
+    property QtObject theme: themeLoader.adapter
+    property bool oledMode: lightMode ? false : theme.oledMode
+    property bool lightMode: theme.lightMode
+
+    property int roundness: theme.roundness
+    property string defaultFont: theme.font
+    property int animDuration: theme.animDuration
+    property bool tintIcons: theme.tintIcons
+
+    // Handle lightMode changes
+    onLightModeChanged: {
+        console.log("lightMode changed to:", lightMode);
+        if (GlobalStates.wallpaperManager) {
+            var wallpaperManager = GlobalStates.wallpaperManager;
+            if (wallpaperManager.currentWallpaper) {
+                console.log("Regenerating colors due to lightMode change");
+                if (typeof wallpaperManager.regenerateColors === "function") {
+                    wallpaperManager.regenerateColors();
+                } else {
+                    wallpaperManager.runMatugenForCurrentWallpaper();
+                }
+            }
+        }
+    }
+
+    // Bar configuration
+    property QtObject bar: barLoader.adapter
+    property bool showBackground: theme.srBarBg.opacity > 0
+
+    // Workspace configuration
+    property QtObject workspaces: workspacesLoader.adapter
+
+    // Overview configuration
+    property QtObject overview: overviewLoader.adapter
+
+    // Notch configuration
+    property QtObject notch: notchLoader.adapter
+    property string notchTheme: notch.theme
+    property string notchPosition: notch.position
+
+    onNotchPositionChanged: {
+        if (!initialLoadComplete || !dockReady) return;
+
+        let needsMark = false;
+
+        // If notch moves bottom
+        if (notchPosition === "bottom") {
+            // Conflict with Dock?
+            if (dock.position === "bottom") {
+                console.log("Notch moved to bottom, adjusting Dock position...");
+                // Offset Dock to avoid notch
+                if (bar.position === "left") {
+                    dock.position = "right";
+                } else {
+                    dock.position = "left";
+                }
+                needsMark = true;
+            }
+        }
+        // If notch moves top
+        else if (notchPosition === "top") {
+            // Restore Dock if displaced
+            if (dock.position === "left" || dock.position === "right") {
+                console.log("Notch moved to top, restoring Dock to bottom...");
+                dock.position = "bottom";
+                needsMark = true;
+            }
+        }
+
+        // Only mark shell changed if we're NOT in the middle of an external
+        // file reload. External reloads set pauseAutoSave=true before reload()
+        // and false after. If pauseAutoSave is already true here it means we
+        // are either in an external reload or already inside a change session.
+        // In both cases calling markShellChanged would leave pauseAutoSave
+        // stuck true forever because no apply/discard is triggered.
+        if (needsMark && !root.pauseAutoSave) {
+            GlobalStates.markShellChanged();
+        }
+    }
+
+    // Compositor configuration
+    property QtObject compositor: compositorLoader.adapter
+    property int compositorRounding: compositor.syncRoundness ? roundness : compositor.rounding
+    property int compositorBorderSize: compositor.syncBorderWidth ? (theme.srBg.border[1] || 0) : compositor.borderSize
+    property string compositorBorderColor: compositor.syncBorderColor ? (theme.srBg.border[0] || "primary") : (compositor.activeBorderColor.length > 0 ? compositor.activeBorderColor[0] : "primary")
+    property real compositorShadowOpacity: compositor.syncShadowOpacity ? theme.shadowOpacity : compositor.shadowOpacity
+    property string compositorShadowColor: compositor.syncShadowColor ? theme.shadowColor : compositor.shadowColor
+
+    // Performance configuration
+    property QtObject performance: performanceLoader.adapter
+    property bool blurTransition: performance.blurTransition
+
+    // Weather configuration
+    property QtObject weather: weatherLoader.adapter
+
+    // Desktop configuration
+    property QtObject desktop: desktopLoader.adapter
+
+    // Lockscreen configuration
+    property QtObject lockscreen: lockscreenLoader.adapter
+
+    // Prefix configuration
+    property QtObject prefix: prefixLoader.adapter
+
+    // System configuration
+    property QtObject system: systemLoader.adapter
+
+    // Dock configuration
+    property QtObject dock: dockLoader.adapter
+
+    // Pinned apps configuration (stored in dataPath)
+    property QtObject pinnedApps: pinnedAppsLoader.adapter
+
+    // AI configuration
+    property QtObject ai: aiLoader.adapter
+
+    // Module save functions
+    function saveBar() {
+        barLoader.writeAdapter();
+    }
+    function saveWorkspaces() {
+        workspacesLoader.writeAdapter();
+    }
+    function saveOverview() {
+        overviewLoader.writeAdapter();
+    }
+    function saveNotch() {
+        notchLoader.writeAdapter();
+    }
+    function saveCompositor() {
+        compositorLoader.writeAdapter();
+    }
+    function savePerformance() {
+        performanceLoader.writeAdapter();
+    }
+    function saveWeather() {
+        weatherLoader.writeAdapter();
+    }
+    function saveDesktop() {
+        desktopLoader.writeAdapter();
+    }
+    function saveLockscreen() {
+        lockscreenLoader.writeAdapter();
+    }
+    function savePrefix() {
+        prefixLoader.writeAdapter();
+    }
+    function saveSystem() {
+        systemLoader.writeAdapter();
+    }
+    function saveDock() {
+        dockLoader.writeAdapter();
+    }
+    function savePinnedApps() {
+        pinnedAppsLoader.writeAdapter();
+    }
+    function saveAi() {
+        aiLoader.writeAdapter();
+    }
+
+    // Color helpers
+    function isHexColor(colorValue) {
+        if (!colorValue || typeof colorValue !== 'string')
+            return false;
+        const normalized = colorValue.toLowerCase().trim();
+        return normalized.startsWith('#') || normalized.startsWith('rgb');
+    }
+
+    function resolveColor(colorValue) {
+        if (!colorValue) return "transparent"; // Fallback
+        
+        if (isHexColor(colorValue)) {
+            return colorValue;
+        }
+        
+        // Check Colors singleton
+        if (typeof Colors === 'undefined' || !Colors) return "transparent";
+        
+        return Colors[colorValue] || "transparent"; 
+    }
+
+    function resolveColorWithOpacity(colorValue, opacity) {
+        if (!colorValue) return Qt.rgba(0,0,0,0);
+        
+        const color = isHexColor(colorValue) ? Qt.color(colorValue) : (Colors[colorValue] || Qt.color("transparent"));
+        return Qt.rgba(color.r, color.g, color.b, opacity);
+    }
+}

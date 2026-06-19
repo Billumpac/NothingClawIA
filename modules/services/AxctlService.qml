@@ -1,0 +1,362 @@
+pragma Singleton
+
+import QtQuick
+import Quickshell
+import Quickshell.Io
+
+Singleton {
+    id: root
+
+    property var focusedMonitor: null
+    property var focusedWorkspace: null
+    property var focusedClient: null
+
+    property int focusHistoryCounter: 0
+
+    property QtObject clients: QtObject {
+        property var values: []
+    }
+
+    property QtObject monitors: QtObject {
+        property var values: []
+    }
+
+    property QtObject workspaces: QtObject {
+        property var values: []
+    }
+
+    signal rawEvent(var event)
+    signal monitorsUpdated()
+    signal subscribeReady()
+    signal subscribeFailed()
+    signal configReloaded()
+
+    // Pending state for coalescing rapid updates (16ms debounce)
+    property var _pendingState: null
+    Timer {
+        id: _stateCoalesceTimer
+        interval: 16  // ~1 frame at 60fps
+        onTriggered: {
+            if (root._pendingState) {
+                root.applyState(root._pendingState);
+                root._pendingState = null;
+            }
+        }
+    }
+
+    // Config path for axctl daemon
+    property string configPath: (Quickshell.env("XDG_DATA_HOME") || (Quickshell.env("HOME") + "/.local/share")) + "/nothingless/axctl.toml"
+
+    function dispatch(command) {
+        if (!command) return;
+
+        let spaceIdx = command.indexOf(' ');
+        let action = spaceIdx !== -1 ? command.substring(0, spaceIdx).trim() : command.trim();
+        let rawArgs = spaceIdx !== -1 ? command.substring(spaceIdx + 1).trim() : "";
+
+        let getAddr = (str) => {
+            let m = str.match(/address:([^\s,]+)/);
+            return m ? m[1] : str.trim();
+        };
+
+        let cmdArgs = [];
+
+        if (action === "workspace") {
+            cmdArgs = ["workspace", "switch", rawArgs];
+        } else if (action === "closewindow") {
+            cmdArgs = ["window", "close", getAddr(rawArgs)];
+        } else if (action === "focuswindow") {
+            cmdArgs = ["window", "focus", getAddr(rawArgs)];
+        } else if (action === "movetoworkspacesilent") {
+            // axctl C fixed: Window.MoveToWorkspaceSilent works correctly.
+            // CLI: axctl window move-to-workspace-silent <ws> [window_id]
+            let subParts = rawArgs.split(',');
+            let ws = subParts[0].trim();
+            let addr = subParts.length > 1 ? getAddr(subParts[1]) : "";
+            cmdArgs = ["window", "move-to-workspace-silent", ws];
+            if (addr) cmdArgs.push(addr);
+        } else if (action === "togglespecialworkspace") {
+            cmdArgs = ["workspace", "toggle-special"];
+            if (rawArgs) cmdArgs.push(rawArgs);
+        } else if (action === "monitor") {
+            // Monitor commands go directly to hyprctl dispatch
+            cmdArgs = ["system", "execute", "hyprctl dispatch " + command];
+        } else {
+            cmdArgs = ["system", "execute", command];
+        }
+
+        let finalCommand = ["axctl", "-c", root.configPath].concat(cmdArgs.filter(x => x !== "" && x !== undefined));
+
+        try {
+            let proc = Qt.createQmlObject('import Quickshell.Io; Process { stderr: StdioCollector {} }', root);
+            proc.command = finalCommand;
+            proc.onExited.connect((code) => {
+                if (code !== 0 && proc.stderr.text) {
+                    console.warn("AxctlService dispatch error:", finalCommand.join(' '), "→", proc.stderr.text);
+                }
+                proc.destroy();
+            });
+            proc.running = true;
+        } catch (e) {
+            console.warn("AxctlService: failed to create dispatch process:", e);
+        }
+    }
+
+    function monitorFor(screen) {
+        if (!screen) return null;
+        let screenName = screen.name || screen;
+        let values = root.monitors.values || [];
+        for (let i = 0; i < values.length; i++) {
+            if (values[i].name === screenName) return values[i];
+        }
+        return null;
+    }
+
+    function applyState(state) {
+        if (!state) return;
+
+        // --- Windows ---
+        if (state.windows) {
+            let existingClients = root.clients.values || [];
+            let mappedClients = state.windows.map(win => {
+                let existing = existingClients.find(c => c.address === win.id);
+                let prevFocus = existing && existing.focusHistoryID !== undefined ? existing.focusHistoryID : 999999;
+                let newFocus = win.is_focused ? (existing && existing.is_focused ? prevFocus : --root.focusHistoryCounter) : prevFocus;
+                return {
+                    address: win.id,
+                    class: win.app_id,
+                    title: win.title,
+                    workspace: { id: parseInt(win.workspace_id) || 0, name: win.workspace_id },
+                    monitor: parseInt(win.metadata ? win.metadata.monitor_id : 0) || 0,
+                    floating: win.is_floating,
+                    fullscreen: win.is_fullscreen,
+                    hidden: win.is_hidden,
+                    mapped: true,
+                    at: [win.metadata ? (win.metadata.x || 0) : 0, win.metadata ? (win.metadata.y || 0) : 0],
+                    size: [win.metadata ? (win.metadata.width || 100) : 100, win.metadata ? (win.metadata.height || 100) : 100],
+                    xwayland: (win.metadata ? win.metadata.xwayland : false) || false,
+                    is_focused: win.is_focused || false,
+                    focusHistoryID: newFocus
+                };
+            });
+            root.clients.values = mappedClients;
+            let focused = mappedClients.find(w => w.address === (root.focusedClient ? root.focusedClient.address : undefined)) || mappedClients.find(w => w.is_focused) || null;
+            if (focused !== root.focusedClient) {
+                root.focusedClient = focused;
+            }
+        }
+
+        // --- Workspaces ---
+        if (state.workspaces) {
+            let mappedWorkspaces = state.workspaces.map(ws => ({
+                id: parseInt(ws.id) || 0,
+                name: ws.name,
+                monitor: ws.monitor_id,
+                active: ws.is_active,
+                windows: 0
+            }));
+            root.workspaces.values = mappedWorkspaces;
+            let focused = mappedWorkspaces.find(ws => ws.active) || null;
+            if (focused !== root.focusedWorkspace) {
+                root.focusedWorkspace = focused;
+            }
+        }
+
+        // --- Monitors ---
+        if (state.monitors) {
+            let mappedMonitors = state.monitors.map(mon => {
+                let actWsId = parseInt(mon.metadata ? mon.metadata.active_workspace : 0) || 0;
+                let actWsName = mon.metadata ? mon.metadata.active_workspace : "";
+                if (actWsId === 0) {
+                    let wss = state.workspaces || root.workspaces.values || [];
+                    let w = wss.find(ws => (ws.monitor_id === mon.name || ws.monitor === mon.name) && (ws.is_active || ws.active));
+                    if (!w) w = wss.find(ws => (ws.monitor_id === mon.name || ws.monitor === mon.name) && !(ws.is_empty === true));
+                    if (!w) w = wss.find(ws => (ws.monitor_id === mon.name || ws.monitor === mon.name));
+                    if (w) {
+                        actWsId = parseInt(w.id) || 0;
+                        actWsName = w.name;
+                    }
+                }
+                return {
+                    id: parseInt(mon.id) || 0,
+                    name: mon.name,
+                    focused: mon.is_focused,
+                    width: mon.width,
+                    height: mon.height,
+                    refreshRate: mon.refresh_rate,
+                    scale: mon.scale,
+                    x: mon.metadata ? parseInt(mon.metadata.x) || 0 : 0,
+                    y: mon.metadata ? parseInt(mon.metadata.y) || 0 : 0,
+                    transform: mon.metadata ? parseInt(mon.metadata.transform) || 0 : 0,
+                    activeWorkspace: { id: actWsId, name: actWsName }
+                };
+            });
+            root.monitors.values = mappedMonitors;
+            let focused = mappedMonitors.find(m => m.focused) || null;
+            if (focused !== root.focusedMonitor) {
+                root.focusedMonitor = focused;
+            }
+            root.monitorsUpdated();
+        }
+    }
+
+    property Process ensureConfigDir: Process {
+        command: ["mkdir", "-p", (Quickshell.env("XDG_DATA_HOME") || (Quickshell.env("HOME") + "/.local/share")) + "/nothingless"]
+        running: true
+    }
+
+    // Start axctl daemon with correct config path
+    property Process axctlProcess: Process {
+        command: ["axctl", "-c", root.configPath, "daemon"]
+        running: true
+        stdout: SplitParser {
+            onRead: (data) => {
+                console.log("axctl:", String(data).trim())
+            }
+        }
+        onExited: (code) => {
+            if (code === 0) {
+                console.log("axctl daemon started successfully")
+            } else if (code === 1) {
+                // Exit code 1 typically means daemon already running (socket exists).
+                // This is not fatal — subscribe will connect to the existing daemon.
+                console.log("axctl daemon already running or socket exists (exit:", code + ")")
+            } else {
+                console.warn("axctl daemon exited with unexpected code:", code)
+            }
+        }
+    }
+
+    // Brief delay to let daemon start before subscribing
+    Timer {
+        id: subscribeDelay
+        interval: 500
+        running: true
+        onTriggered: axctlSubscribe.running = true
+    }
+
+    // Track subscribe failures to detect daemon death
+    property int _subscribeFailCount: 0
+    property int _subscribeSuccessCount: 0
+    property Timer healthCheckTimer: Timer {
+        interval: 5000
+        repeat: true
+        running: false
+        onTriggered: {
+            // If subscribe has been running a while, reset fail counter
+            if (_subscribeSuccessCount > 0) {
+                _subscribeFailCount = 0;
+            }
+        }
+    }
+
+    // Force-reset the subscribe connection
+    function restartSubscribe() {
+        console.log("AxctlService: Restarting subscribe connection...");
+        reconnectTimer.stop();
+        axctlSubscribe.running = false;
+        Qt.callLater(() => {
+            axctlSubscribe.running = true;
+        });
+    }
+
+    // Health check: if daemon is dead, restart it
+    function ensureDaemonRunning() {
+        if (!axctlProcess.running) {
+            console.warn("AxctlService: Daemon not running, restarting...");
+            axctlProcess.running = true;
+        }
+    }
+
+    // Auto-reconnect on unexpected subscribe exit
+    Timer {
+        id: reconnectTimer
+        interval: 500  // Reduced from 1000ms for faster recovery
+        onTriggered: {
+            // Check daemon health before reconnecting
+            if (!axctlProcess.running) {
+                console.warn("AxctlService: Daemon not running, starting it...");
+                axctlProcess.running = true;
+                Qt.callLater(() => {
+                    // Wait a bit for daemon to start
+                    root.restartSubscribe();
+                });
+            } else {
+                axctlSubscribe.running = true;
+            }
+        }
+    }
+
+    property Process axctlSubscribe: Process {
+        command: ["axctl", "-c", root.configPath, "subscribe"]
+        running: false
+
+        stdout: SplitParser {
+            onRead: (data) => {
+                if (!data) return;
+                try {
+                    let parsedJson = JSON.parse(data);
+
+                    // Coalesce rapid state updates: keep only latest pending state
+                    if (parsedJson.state) {
+                        root._pendingState = parsedJson.state;
+                        if (!_stateCoalesceTimer.running)
+                            _stateCoalesceTimer.start();
+                    }
+
+                    // Emit raw event for consumers
+                    parsedJson.name = parsedJson.method ? parsedJson.method.split('.').pop().toLowerCase() : "";
+                    parsedJson.data = parsedJson.params;
+
+                    // Detect config reload and emit dedicated signal
+                    if (parsedJson.name === "configreloaded") {
+                        console.log("AxctlService: Detected config reload event");
+                        root.configReloaded();
+                    }
+
+                    root.rawEvent(parsedJson);
+                } catch (e) {
+                    console.error("AxctlService subscribe JSON parse error:", e);
+                }
+            }
+        }
+
+        // Track process start for health monitoring
+        onStarted: {
+            _subscribeFailCount = 0;
+            _subscribeSuccessCount++;
+            healthCheckTimer.running = true;
+            root.subscribeReady();
+            console.log("AxctlService: Subscribe connected successfully");
+        }
+
+        onExited: (code) => {
+            healthCheckTimer.running = false;
+
+            if (code !== 0) {
+                _subscribeFailCount++;
+                console.warn("axctl subscribe exited (code " + code + "), fail #" + _subscribeFailCount);
+
+                // If subscribe keeps dying, daemon is likely dead — restart it
+                if (_subscribeFailCount >= 3) {
+                    console.warn("AxctlService: Subscribe failed 3 times, restarting daemon...");
+                    _subscribeFailCount = 0;
+                    axctlProcess.running = false;
+                    Qt.callLater(() => {
+                        axctlProcess.running = true;
+                    });
+                }
+                root.subscribeFailed();
+            } else {
+                console.log("axctl subscribe exited cleanly");
+            }
+            reconnectTimer.restart();
+        }
+    }
+
+    Component.onDestruction: {
+        reconnectTimer.running = false
+        axctlProcess.running = false
+        axctlSubscribe.running = false
+    }
+}

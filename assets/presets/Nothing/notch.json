@@ -1,0 +1,10 @@
+{
+  "theme": "island",
+  "position": "top",
+  "hoverRegionHeight": 8,
+  "keepHidden": false,
+  "noMediaDisplay": "compositor",
+  "customText": "Nothing",
+  "disableHoverExpansion": false,
+  "showMetrics": false
+}

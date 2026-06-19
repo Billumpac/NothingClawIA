@@ -1,0 +1,40 @@
+{
+  "position": "top",
+  "launcherIconTint": false,
+  "launcherIconFullTint": false,
+  "launcherIconSize": 22,
+  "pillStyle": "default",
+  "enableFirefoxPlayer": true,
+  "enableChromiumPlayer": true,
+  "barColor": [
+    [
+      "surfaceDim",
+      0.92
+    ]
+  ],
+  "frameEnabled": false,
+  "pinnedOnStartup": false,
+  "hoverToReveal": false,
+  "showPinButton": false,
+  "availableOnFullscreen": true,
+  "use12hFormat": true,
+  "containBar": true,
+  "keepBarShadow": false,
+  "keepBarBorder": true,
+  "iconSpacing": 6,
+  "widgetSpacing": 4,
+  "barPadding": 6,
+  "clockFormat": "hh:mm",
+  "showDate": false,
+  "showBattery": true,
+  "showVolume": true,
+  "showBluetooth": true,
+  "showNetwork": true,
+  "showTray": true,
+  "taskTrayEnabled": true,
+  "taskTrayShowToggle": true,
+  "taskTrayAlwaysVisible": false,
+  "showWorkspaces": true,
+  "showActiveWindow": false,
+  "barMode": "dynamic"
+}
